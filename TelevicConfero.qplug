@@ -1,0 +1,879 @@
+-- Televic Confero (Plixus) Q-SYS Plugin v1.1.0
+-- Confero Customer API 7.18
+PluginInfo = {
+  Name = "Televic Confero (Plixus)",
+  Version = "1.1.0",
+  BuildVersion = "1.1.0.0",
+  Id = "6c9ca9e2-6f14-45d9-a55d-4a5d39b8dba0",
+  Author = "Jens Claerebout",
+  Description = "Control Televic Confero meetings and Plixus seat microphones through Customer API 7.18."
+}
+
+PluginInfo.Color = { 28, 116, 166 }
+PluginInfo.Type = "device"
+PluginInfo.IsManaged = true
+
+-- Properties
+function GetProperties()
+  return {
+    { Name = "Connection", Type = "enum", Choices = { "HTTP (9080)", "HTTPS (9443)" }, Value = "HTTP (9080)" },
+    { Name = "Seat Count", Type = "integer", Min = 1, Max = 100, Value = 15 },
+    { Name = "Refresh Interval", Type = "integer", Min = 10, Max = 60, Value = 30 },
+    { Name = "Debug Print", Type = "enum", Choices = { "None", "Tx/Rx", "All" }, Value = "None" }
+  }
+end
+
+-- Controls
+function GetControls(props)
+  local seats = props["Seat Count"].Value
+  return {
+    { Name = "Recording Start", ControlType = "Button", ButtonType = "Trigger", PinStyle = "Input", UserPin = true },
+    { Name = "Recording Stop", ControlType = "Button", ButtonType = "Trigger", PinStyle = "Input", UserPin = true },
+    { Name = "Recording Active", ControlType = "Indicator", IndicatorType = "Led", PinStyle = "Output", UserPin = true },
+    { Name = "Recording State", ControlType = "Text", PinStyle = "Output", UserPin = true },
+    { Name = "Recording Status", ControlType = "Text", PinStyle = "Output", UserPin = true },
+    { Name = "Discussion Mode", ControlType = "Text", PinStyle = "Both", UserPin = true },
+    { Name = "Number of Open Mics", ControlType = "Knob", ControlUnit = "Integer", Min = 1, Max = 100, DefaultValue = 3, PinStyle = "Both", UserPin = true },
+    { Name = "Apply Discussion Settings", ControlType = "Button", ButtonType = "Trigger", PinStyle = "Input", UserPin = true },
+    { Name = "Discussion Settings Status", ControlType = "Text", PinStyle = "Output", UserPin = true },
+    { Name = "IP Address", ControlType = "Text", PinStyle = "Both", UserPin = true },
+    { Name = "API Token", ControlType = "Text", PinStyle = "Both", UserPin = true },
+    { Name = "Seat Number", ControlType = "Text", Count = seats, PinStyle = "Output", UserPin = true },
+    { Name = "Seat Name", ControlType = "Text", Count = seats, PinStyle = "Output", UserPin = true },
+    { Name = "Speaking Seats", ControlType = "Text", PinStyle = "Both", UserPin = true },
+    { Name = "Request Seats", ControlType = "Text", PinStyle = "Both", UserPin = true },
+    { Name = "Turn Off Selected Mic", ControlType = "Button", ButtonType = "Trigger", PinStyle = "Input", UserPin = true },
+    { Name = "Enable Requested Mic", ControlType = "Button", ButtonType = "Trigger", PinStyle = "Input", UserPin = true },
+    { Name = "Speaker Count", ControlType = "Text", PinStyle = "Output", UserPin = true },
+    { Name = "Request Count", ControlType = "Text", PinStyle = "Output", UserPin = true },
+    { Name = "Status", ControlType = "Indicator", IndicatorType = "Status", PinStyle = "Output", UserPin = true },
+    { Name = "Connected", ControlType = "Indicator", IndicatorType = "LED", PinStyle = "Output", UserPin = true },
+    { Name = "Refresh", ControlType = "Button", ButtonType = "Trigger", PinStyle = "Input", UserPin = true },
+
+    { Name = "Meeting Start", ControlType = "Button", ButtonType = "Trigger", PinStyle = "Input", UserPin = true },
+    { Name = "Scheduled Meetings", ControlType = "Text", PinStyle = "Both", UserPin = true },
+    { Name = "Start Selected Meeting", ControlType = "Button", ButtonType = "Trigger", PinStyle = "Input", UserPin = true },
+    { Name = "Meeting Command Status", ControlType = "Text", PinStyle = "Output", UserPin = true },
+    { Name = "Meeting Stop", ControlType = "Button", ButtonType = "Trigger", PinStyle = "Input", UserPin = true },
+    { Name = "Meeting Running", ControlType = "Indicator", IndicatorType = "LED", PinStyle = "Output", UserPin = true },
+    { Name = "Meeting Title", ControlType = "Text", PinStyle = "Output", UserPin = true },
+    { Name = "Meeting ID", ControlType = "Text", PinStyle = "Output", UserPin = true },
+
+    { Name = "Clear Speakers", ControlType = "Button", ButtonType = "Trigger", PinStyle = "Input", UserPin = true },
+    { Name = "Clear Requests", ControlType = "Button", ButtonType = "Trigger", PinStyle = "Input", UserPin = true },
+
+    { Name = "Seat Mic On", ControlType = "Button", ButtonType = "Toggle", Count = seats, PinStyle = "Both", UserPin = true },
+    { Name = "Seat Request", ControlType = "Indicator", IndicatorType = "LED", Count = seats, PinStyle = "Output", UserPin = true },
+    { Name = "Seat Role", ControlType = "Text", Count = seats, PinStyle = "Output", UserPin = true }
+  }
+end
+
+function GetPages(props)
+  local pages = {{name="Setup"}, {name="Meeting Controls"}}
+  local seatPages = math.ceil(props["Seat Count"].Value / 15)
+  for i = 1, seatPages do
+    table.insert(pages, {name=seatPages == 1 and "Seats" or ("Seats " .. i)})
+  end
+  table.insert(pages, {name="Active / Request List"})
+  table.insert(pages, {name="Recording"})
+  return pages
+end
+
+-- Layout
+function GetControlLayout(props)
+  local layout = {}
+  local graphics = {}
+  local seats = props["Seat Count"].Value
+  local width = 660
+
+  layout["Seat Mic On"] = {}
+  layout["Seat Request"] = {}
+  layout["Seat Role"] = {}
+
+  table.insert(graphics, { Type = "Header", Text = "Connection", Position = { 0, 0 }, Size = { width, 28 } })
+  layout["Status"] = { PrettyName = "Connection~Status", Style = "Status", Position = { 10, 36 }, Size = { 500, 24 } }
+  layout["Connected"] = { PrettyName = "Connection~Connected", Style = "LED", Position = { 520, 36 }, Size = { 24, 24 } }
+  layout["Refresh"] = { PrettyName = "Connection~Refresh", Style = "Button", Position = { 554, 34 }, Size = { 96, 28 } }
+
+  table.insert(graphics, { Type = "Header", Text = "Meeting", Position = { 0, 72 }, Size = { width, 28 } })
+  layout["Meeting Start"] = { PrettyName = "Meeting~Start", Style = "Button", Position = { 10, 110 }, Size = { 100, 32 } }
+  layout["Meeting Stop"] = { PrettyName = "Meeting~Stop", Style = "Button", Position = { 120, 110 }, Size = { 100, 32 } }
+  layout["Meeting Running"] = { PrettyName = "Meeting~Running", Style = "LED", Position = { 232, 114 }, Size = { 24, 24 } }
+  layout["Meeting Title"] = { PrettyName = "Meeting~Title", Style = "Text", Position = { 270, 110 }, Size = { 380, 32 } }
+  layout["Meeting ID"] = { PrettyName = "Meeting~ID", Style = "Text", Position = { 270, 148 }, Size = { 380, 24 } }
+
+  layout["Clear Speakers"] = { PrettyName = "Discussion~Clear Speakers", Style = "Button", Position = { 10, 260 }, Size = { 145, 30 } }
+  layout["Clear Requests"] = { PrettyName = "Discussion~Clear Requests", Style = "Button", Position = { 165, 260 }, Size = { 145, 30 } }
+
+  table.insert(graphics, { Type = "Header", Text = "Seats", Position = { 0, 302 }, Size = { width, 28 } })
+  table.insert(graphics, { Type = "Text", Text = "Seat", Position = { 10, 334 }, Size = { 55, 20 } })
+  table.insert(graphics, { Type = "Text", Text = "Mic", Position = { 75, 334 }, Size = { 80, 20 } })
+  table.insert(graphics, { Type = "Text", Text = "Request", Position = { 165, 334 }, Size = { 90, 20 } })
+  table.insert(graphics, { Type = "Text", Text = "Role", Position = { 265, 334 }, Size = { 180, 20 } })
+
+  for i = 1, seats do
+    local y = 358 + ((i - 1) * 30)
+    table.insert(graphics, { Type = "Text", Text = tostring(i), Position = { 10, y + 4 }, Size = { 55, 22 } })
+    layout["Seat Mic On"][i] = { PrettyName = "Seats~Row " .. i .. "~Mic On", Style = "Button", ButtonType = "Toggle", Position = { 75, y }, Size = { 80, 26 } }
+    layout["Seat Request"][i] = { PrettyName = "Seats~Row " .. i .. "~Request", Style = "LED", Position = { 197, y }, Size = { 26, 26 }, Color = { 0, 200, 70 }, OffColor = { 35, 55, 40 }, UnlinkOffColor = true, CornerRadius = 13 }
+    layout["Seat Role"][i] = { PrettyName = "Seats~Row " .. i .. "~Role", Style = "Text", Position = { 265, y }, Size = { 180, 26 } }
+  end
+
+  -- Make room for editable connection fields above the existing controls.
+  for _, item in ipairs(graphics) do item.Position[2] = item.Position[2] + 84 end
+  for _, item in pairs(layout) do
+    if item.Position then item.Position[2] = item.Position[2] + 84
+    else for _, row in ipairs(item) do row.Position[2] = row.Position[2] + 84 end end
+  end
+  table.insert(graphics, { Type = "Text", Text = "IP Address", Position = {10, 8}, Size = {100, 20} })
+  table.insert(graphics, { Type = "Text", Text = "API Token", Position = {10, 44}, Size = {100, 20} })
+  layout["IP Address"] = { PrettyName = "Connection~IP Address", Style = "Text", Position = {120, 4}, Size = {530, 28} }
+  layout["API Token"] = { PrettyName = "Connection~API Token", Style = "Text", Position = {120, 40}, Size = {530, 28} }
+  layout["Seat Number"], layout["Seat Name"] = {}, {}
+  table.insert(graphics, { Type = "Text", Text = "Name", Position = {455, 418}, Size = {195, 20} })
+  for i = 1, seats do
+    local y = 442 + (i - 1) * 30
+    layout["Seat Number"][i] = { PrettyName = "Seats~Row " .. i .. "~Number", Style = "Text", Position = {10, y}, Size = {55, 26} }
+    layout["Seat Name"][i] = { PrettyName = "Seats~Row " .. i .. "~Name", Style = "Text", Position = {455, y}, Size = {195, 26} }
+    layout["Seat Request"][i].Style = "LED"
+    layout["Seat Request"][i].ButtonType = nil
+  end
+  -- Remove the old fixed seat labels: row numbers are not API seat numbers.
+  for i = #graphics, 1, -1 do
+    if graphics[i].Position[1] == 10 and graphics[i].Position[2] >= 442 then table.remove(graphics, i) end
+  end
+  for i, name in ipairs({"Speaking Seats", "Request Seats"}) do
+    local x = 680 + (i - 1) * 330
+    table.insert(graphics, { Type = "Header", Text = name .. " (number + name)", Position = {x, 0}, Size = {320, 28} })
+    layout[name] = { PrettyName = "Lists~" .. name, Style = "ListBox", Position = {x, 70}, Size = {320, 310} }
+    local action = i == 1 and "Turn Off Selected Mic" or "Enable Requested Mic"
+    layout[action] = { PrettyName = "Lists~" .. action, Style = "Button", Legend = i == 1 and "Turn Off Mic" or "Enable Mic", Position = {x, 390}, Size = {320, 36} }
+    local count = i == 1 and "Speaker Count" or "Request Count"
+    layout[count] = { PrettyName = "Lists~" .. count, Style = "Text", Position = {x, 34}, Size = {100, 28} }
+  end
+  layout["Meeting Start"].Legend = "Start Open"
+  table.insert(graphics, { Type = "Text", Text = "Scheduled meetings", Position = {10, 260}, Size = {640, 20} })
+  layout["Scheduled Meetings"] = { PrettyName = "Meeting~Scheduled Meetings", Style = "ListBox", Position = {10, 286}, Size = {640, 130} }
+  layout["Start Selected Meeting"] = { PrettyName = "Meeting~Start Selected Meeting", Style = "Button", Legend = "Start Selected Meeting", Position = {10, 426}, Size = {200, 32} }
+  layout["Meeting Command Status"] = { PrettyName = "Meeting~Command Status", Style = "Text", Position = {10, 466}, Size = {640, 28} }
+  -- Keep meeting selection/actions together; seat rows start below this panel.
+  for _, graphic in ipairs(graphics) do
+    if graphic.Position[1] < 660 and graphic.Position[2] >= 386 and graphic.Position[2] <= 418 then
+      graphic.Position[2] = graphic.Position[2] + 124
+    end
+  end
+  for _, name in ipairs({"Seat Number", "Seat Name", "Seat Mic On", "Seat Request", "Seat Role"}) do
+    for _, row in ipairs(layout[name]) do row.Position[2] = row.Position[2] + 124 end
+  end
+  layout["Clear Speakers"].Position = {680, 438}
+  layout["Clear Speakers"].PrettyName = "Lists~Clear Speakers"
+  layout["Clear Requests"].Position = {1010, 438}
+  layout["Clear Requests"].PrettyName = "Lists~Clear Requests"
+  -- Designer binds counted controls by flat names, unlike runtime Controls arrays.
+  for _, name in ipairs({"Seat Number", "Seat Name", "Seat Mic On", "Seat Request", "Seat Role"}) do
+    local rows = layout[name]
+    layout[name] = nil
+    for i = 1, seats do
+      local key = name .. (seats == 1 and "" or (" " .. i))
+      layout[key] = rows[i]
+    end
+  end
+  local page = props["page_index"] and props["page_index"].Value or 1
+  local seatPages = math.ceil(seats / 15)
+  local listPage, recordingPage = 3 + seatPages, 4 + seatPages
+  local selected = {}
+  for name, item in pairs(layout) do
+    local target = 1
+    if name:match("^Meeting") or name == "Scheduled Meetings" or name == "Start Selected Meeting" then target = 2
+    elseif name:match("^Seat ") then
+      local row = tonumber(name:match(" (%d+)$")) or 1
+      target = 3 + math.floor((row - 1) / 15)
+    elseif name == "Speaking Seats" or name == "Request Seats" or name == "Speaker Count" or name == "Request Count"
+      or name == "Turn Off Selected Mic" or name == "Enable Requested Mic" or name:match("^Clear ") then target = listPage end
+    if target == page then
+      if page == 2 then item.Position[2] = item.Position[2] - 156
+      elseif page >= 3 and page < listPage then item.Position[2] = item.Position[2] - 510 - (page - 3) * 15 * 30
+      elseif page == listPage then item.Position[1] = item.Position[1] - 680 end
+      selected[name] = item
+    end
+  end
+  graphics = {}
+  local function label(text,x,y,w)
+    table.insert(graphics,{Type="Text",Text=text,Position={x,y},Size={w,22}})
+  end
+  if page == 1 then
+    label("IP Address",10,8,100); label("API Token",10,44,100)
+    label("Discussion settings",10,170,400)
+    label("Mode",10,208,180); label("Number of open mics",10,250,180)
+    selected["Discussion Mode"]={Style="ComboBox",Position={200,204},Size={300,28}}
+    selected["Number of Open Mics"]={Style="Text",Position={200,246},Size={100,28}}
+    selected["Apply Discussion Settings"]={Style="Button",Legend="Apply Settings",Position={200,290},Size={160,32}}
+    selected["Discussion Settings Status"]={Style="Text",Position={10,334},Size={640,32}}
+  elseif page == 2 then label("Meeting controls",10,4,640); label("Scheduled meetings",10,104,640)
+  elseif page >= 3 and page < listPage then
+    local firstRow = (page - 3) * 15 + 1
+    label("Seats (rows " .. firstRow .. "-" .. math.min(firstRow + 14, seats) .. ")",10,0,640)
+    label("Seat",10,32,55);label("Mic",75,32,80);label("Request",165,32,90);label("Role",265,32,180);label("Name",455,32,195)
+  elseif page == listPage then label("Speaking seats",0,0,320);label("Request seats",330,0,320)
+  elseif page == recordingPage then
+    label("Recording",10,0,640)
+    selected["Recording Start"]={Style="Button",Legend="Start Recording",Position={10,45},Size={160,36}}
+    selected["Recording Stop"]={Style="Button",Legend="Stop Recording",Position={180,45},Size={160,36}}
+    selected["Recording Active"]={Style="LED",Color={255,0,0},Position={10,100},Size={28,28}}
+    selected["Recording State"]={Style="Text",IsReadOnly=true,Position={50,100},Size={290,28}}
+    selected["Recording Status"]={Style="Text",IsReadOnly=true,Position={10,145},Size={640,40}}
+  end
+  return selected, graphics
+end
+
+-- Runtime
+if Controls then
+  local rapidjson = require("rapidjson")
+  -- Q-SYS may expose Count=1 as a scalar control instead of an array.
+  local hostControls = Controls
+  local Controls = setmetatable({}, { __index = hostControls })
+  for _, name in ipairs({"Seat Number", "Seat Name", "Seat Mic On", "Seat Request", "Seat Role"}) do
+    local control = hostControls[name]
+    if Properties["Seat Count"].Value == 1 and control.String ~= nil then
+      Controls[name] = {control}
+    end
+  end
+  
+  local ip = ""
+  local connection = Properties["Connection"].Value
+  local token = ""
+  local seatCount = Properties["Seat Count"].Value
+  local refreshInterval = Properties["Refresh Interval"].Value
+  local debugMode = Properties["Debug Print"].Value
+  
+  local scheme = connection == "HTTPS (9443)" and "https" or "http"
+  local port = connection == "HTTPS (9443)" and 9443 or 9080
+  local baseUrl = scheme .. "://" .. ip .. ":" .. port
+  local headers = { ["Accept"] = "application/json", ["Authorization"] = "Bearer " .. token }
+  local jsonHeaders = { ["Accept"] = "application/json", ["Content-Type"] = "application/json", ["Authorization"] = "Bearer " .. token }
+  
+  local generation = 0
+  local configured = false
+  local seatStates, seatNumbers, names = {}, {}, {}
+  local speakers, requests = {}, {}
+  local selectedSeats = {}
+  local listActions = { ["Speaking Seats"] = "Turn Off Selected Mic", ["Request Seats"] = "Enable Requested Mic" }
+  local revisions = {}
+  local listEventRevisions = {}
+  local pending = {}
+  local failures = {}
+  local refreshTimer = Timer.New()
+  local scheduledTimer = Timer.New()
+  local scheduledMeetings, selectedMeeting = {}, nil
+  local scheduledPending = false
+  local lastEventId = nil
+  local eventPollActive = false
+  local stopping = false
+  local meetingId = ""
+  
+  local function log(kind, message)
+    if debugMode == "All" or (debugMode == "Tx/Rx" and kind ~= "Debug") then
+      print("Confero [" .. kind .. "] " .. tostring(message))
+    end
+  end
+  
+  local function setStatus(severity, text)
+    Controls.Status.Value = severity
+    Controls.Status.String = text
+  end
+  
+  local function setConnected(value, text)
+    Controls.Connected.Boolean = value
+    if value then
+      setStatus(0, text or "Connected")
+    else
+      setStatus(2, text or "Disconnected")
+    end
+  end
+  
+  local function decode(data)
+    if data == nil or data == "" then return nil end
+    local ok, value = pcall(rapidjson.decode, data)
+    if ok then return value end
+    log("Error", "JSON decode failed: " .. tostring(value))
+    return nil
+  end
+  
+  local function request(method, path, body, timeout, callback)
+    if not configured then log("Error", method .. " " .. path .. " skipped: connection is not configured"); return end
+    local currentGeneration = generation
+    local failureKey = path:match("^[^?]+")
+    local url = baseUrl .. path
+    log("Tx", method .. " " .. url .. (body and (" " .. body) or ""))
+    local handler = function(_, code, data, error, responseHeaders)
+      if currentGeneration ~= generation then return end
+      log("Rx", method .. " " .. path .. " HTTP " .. tostring(code) .. " body=" .. tostring(data or "") .. " error=" .. tostring(error or ""))
+      -- An idle event stream can outlast our HTTP deadline. It is not a
+      -- health check: preserve existing status and let seat reads detect outages.
+      local elapsed = tostring(error or ""):match("[Oo]peration timed out after (%d+) milliseconds with 0 bytes received")
+      local idlePoll = method == "GET" and failureKey == "/api/notification/events"
+        and (not code or code == 0) and (data == nil or data == "")
+        and elapsed ~= nil and tonumber(elapsed) >= (timeout or 10) * 1000
+      if idlePoll then
+        if callback then callback(code or 0, data or "", error, responseHeaders, true) end
+        return
+      end
+      -- Recording availability must not disable otherwise working mic control.
+      if path == "/api/recording/state" then
+        if callback then callback(code or 0, data or "", error, responseHeaders) end
+        return
+      end
+      local expected = method == "GET" and ((path == "/api/meeting" and (code == 412 or code == 405))
+        or (path == "/api/meeting/scheduled-meetings" and code == 405))
+      if (code and code >= 200 and code < 300) or expected then
+        failures[failureKey] = nil
+      elseif not code or code == 0 or code == 401 or code == 403
+        or (method == "GET" and (failureKey == "/api/discussion/seats" or failureKey == "/api/notification/events")) then
+        failures[failureKey] = (code == 401 or code == 403) and "Authorization failed" or (path .. ": HTTP " .. tostring(code or 0) .. " " .. tostring(error or ""))
+      else
+        -- A rejected command or unavailable feature is not a lost connection.
+        log("Error", method .. " " .. path .. " rejected (HTTP " .. tostring(code) .. ")")
+      end
+      local _, failure = next(failures)
+      setConnected(failure == nil, failure)
+      if callback then callback(code or 0, data or "", error, responseHeaders) end
+    end
+  
+    if method == "GET" then
+      HttpClient.Download { Url = url, Headers = headers, Timeout = timeout or 10, EventHandler = handler }
+    else
+      HttpClient.Upload { Url = url, Method = method, Headers = jsonHeaders, Data = body or "", Timeout = timeout or 10, EventHandler = handler }
+    end
+  end
+  
+  local function seatName(number)
+    return names[number] or ("Seat " .. tostring(number))
+  end
+
+  local function render()
+    for i = 1, seatCount do
+      local number = seatNumbers[i]
+      local seat = number and seatStates[number]
+      Controls["Seat Number"][i].String = number and tostring(number) or ""
+      Controls["Seat Name"][i].String = number and seatName(number) or ""
+      Controls["Seat Mic On"][i].Boolean = seat ~= nil and seat.microphoneOn == true
+      Controls["Seat Mic On"][i].IsDisabled = seat == nil or not Controls.Connected.Boolean
+      Controls["Seat Request"][i].Boolean = seat ~= nil and seat.requestingToSpeak == true
+      Controls["Seat Role"][i].String = seat and tostring(seat.role or "") or ""
+    end
+    for _, list in ipairs({{speakers, "Speaking Seats", "Speaker Count"}, {requests, "Request Seats", "Request Count"}}) do
+      local lines = {}
+      for _, number in ipairs(list[1]) do table.insert(lines, tostring(number) .. " - " .. seatName(number)) end
+      local selectedLabel = ""
+      for index, number in ipairs(list[1]) do
+        if number == selectedSeats[list[2]] then selectedLabel = lines[index]; break end
+      end
+      if selectedLabel == "" then selectedSeats[list[2]] = nil end
+      Controls[list[2]].Choices = lines
+      Controls[list[2]].String = selectedLabel
+      Controls[listActions[list[2]]].IsDisabled = selectedSeats[list[2]] == nil or not Controls.Connected.Boolean
+      Controls[list[3]].String = tostring(#lines)
+    end
+  end
+
+  local function updateSeat(seat)
+    if type(seat) ~= "table" then return end
+    local number = tonumber(seat.seatNumber)
+    if not number then return end
+    log("Mic", "Feedback seat=" .. number .. " microphoneOn=" .. tostring(seat.microphoneOn)
+      .. " requestingToSpeak=" .. tostring(seat.requestingToSpeak) .. " role=" .. tostring(seat.role))
+    seatStates[number] = seat
+    render()
+  end
+
+  -- Coalesce reads and reject snapshots superseded by a notification.
+  local function readSnapshot(path, apply)
+    if pending[path] or not configured then return end
+    pending[path] = true
+    local revision = revisions[path] or 0
+    request("GET", path, nil, 10, function(code, data)
+      pending[path] = nil
+      if revision ~= (revisions[path] or 0) then
+        log("Debug", "Discarding stale snapshot " .. path .. " after newer feedback")
+        -- List events carry the complete ordered list; no replacement GET needed.
+        if path == "/api/discussion/seats" or listEventRevisions[path] ~= revisions[path] then readSnapshot(path, apply) end
+        return
+      end
+      if code == 200 then
+        local value = decode(data)
+        if type(value) == "table" then apply(value)
+        else failures[path] = "Invalid JSON: " .. path; setConnected(false, failures[path]) end
+      end
+      render()
+    end)
+  end
+
+  local function refreshLists()
+    readSnapshot("/api/discussion/speakers", function(value) speakers = value end)
+    readSnapshot("/api/discussion/requests", function(value) requests = value end)
+  end
+
+  local function refreshSeats()
+    readSnapshot("/api/discussion/seats", function(value)
+      seatStates, seatNumbers = {}, {}
+      for _, seat in ipairs(value) do
+        local number = tonumber(seat.seatNumber)
+        if number then seatStates[number] = seat; table.insert(seatNumbers, number) end
+      end
+      table.sort(seatNumbers)
+      -- A valid authenticated seat snapshot is our periodic health check.
+      -- Requests made before a reboot may never be retried (e.g. settings PUTs),
+      -- so their historical failures must not keep working seat controls locked.
+      if next(failures) ~= nil or not Controls.Connected.Boolean then
+        log("Connection", "Seat feedback received; clearing previous connection failures")
+      end
+      failures = {}
+      setConnected(true)
+      for row, number in ipairs(seatNumbers) do
+        local seat = seatStates[number]
+        log("Debug", "Snapshot row=" .. row .. " seat=" .. number .. " microphoneOn=" .. tostring(seat.microphoneOn)
+          .. " requestingToSpeak=" .. tostring(seat.requestingToSpeak) .. " role=" .. tostring(seat.role))
+      end
+    end)
+  end
+
+  local function refreshMeeting()
+    request("GET", "/api/meeting", nil, 10, function(code, data, error)
+      if code == 200 then
+        local meeting = decode(data)
+        if type(meeting) == "table" then
+          names = {}
+          for _, participant in ipairs(meeting.participants or {}) do
+            local presence = participant.presence
+            local number = type(presence) == "table" and tonumber(presence.seatNumber)
+            local name = ((participant.firstName or "") .. " " .. (participant.lastName or "")):match("^%s*(.-)%s*$")
+            if number and name ~= "" then names[number] = name end
+          end
+          render()
+          meetingId = tostring(meeting.meetingId or "")
+          Controls["Meeting ID"].String = meetingId
+          Controls["Meeting Title"].String = tostring(meeting.title or "")
+          Controls["Meeting Running"].Boolean = meetingId ~= ""
+        end
+      elseif code == 412 or code == 405 then
+        names = {}
+        render()
+        meetingId = ""
+        Controls["Meeting ID"].String = ""
+        Controls["Meeting Title"].String = ""
+        Controls["Meeting Running"].Boolean = false
+      elseif code == 0 then
+        setConnected(false, error or "Meeting refresh failed")
+      end
+    end)
+  end
+  
+  local function refreshAll()
+    refreshMeeting()
+    refreshSeats()
+    refreshLists()
+  end
+  
+  local settings, settingsPending = nil, false
+  local settingsDirty, showingSettings = false, false
+  local settingsEditRevision = 0
+  local modeNames = {"Direct Speak", "Request", "Group", "Operator", "Hands Free"}
+  local modeIds = {"directSpeak", "request", "group", "operator", "handsFree"}
+  local modeOptions = {
+    directSpeak={microphoneActivationType="toggle",speakerOverrideAllowed=false,switchOffAllowed=true,ledColorOn="red",ledColorOff="off"},
+    request={switchOffAllowed=true,cancelRequestAllowed=true,ledColorOn="red",ledColorRequest="green",ledColorOff="off",nextInLineIndication=true},
+    group={microphoneActivationType="toggle",ledColorOn="red",ledColorRequest="green",ledColorOff="off"},
+    operator={ledColorOn="red",ledColorOff="off"},
+    handsFree={pushToMute=true,ledColorOn="red",ledColorOff="off"}
+  }
+  Controls["Discussion Mode"].Choices = modeNames
+  local function showSettings(value)
+    if type(value) ~= "table" or type(value.options) ~= "table" or type(value.maximumNumberOfSpeakers) ~= "number" then return end
+    for i, id in ipairs(modeIds) do
+      if id == value.microphoneMode then
+        settings = value
+        modeOptions[id] = value.options
+        -- Retain local edits while a write or its successor is outstanding.
+        if settingsPending or settingsDirty then return end
+        showingSettings = true
+        Controls["Discussion Mode"].String = modeNames[i]
+        Controls["Number of Open Mics"].Value = value.maximumNumberOfSpeakers
+        showingSettings = false
+        Controls["Discussion Settings Status"].String = "Settings received"
+      end
+    end
+  end
+  local function refreshSettings()
+    request("GET", "/api/discussion/settings", nil, 10, function(code,data)
+      if code == 200 then showSettings(decode(data))
+      else Controls["Discussion Settings Status"].String = "Settings unavailable (HTTP " .. code .. ")" end
+    end)
+  end
+  local applySettings
+  applySettings = function()
+    if not configured or settingsPending then return end
+    local mode
+    for i, name in ipairs(modeNames) do if name == Controls["Discussion Mode"].String then mode = modeIds[i] end end
+    if not mode then settingsDirty = false; Controls["Discussion Settings Status"].String = "Select a mode first"; return end
+    settingsDirty = false
+    settingsPending = true
+    Controls["Discussion Settings Status"].String = "Applying settings"
+    request("PUT", "/api/discussion/settings", rapidjson.encode({microphoneMode=mode,
+      maximumNumberOfSpeakers=Controls["Number of Open Mics"].Value, options=modeOptions[mode]}), 10, function(code)
+      settingsPending = false
+      if settingsDirty then applySettings(); return end
+      if code == 204 then refreshSettings()
+      else Controls["Discussion Settings Status"].String = "Settings rejected (HTTP " .. code .. ")" end
+    end)
+  end
+  local function settingsChanged()
+    if showingSettings then return end
+    if not configured then Controls["Discussion Settings Status"].String = "Enter IP address and token on Setup"; return end
+    settingsDirty = true
+    settingsEditRevision = settingsEditRevision + 1
+    local editRevision, editGeneration = settingsEditRevision, generation
+    Controls["Discussion Settings Status"].String = "Settings change pending"
+    Timer.CallAfter(function()
+      if editGeneration == generation and editRevision == settingsEditRevision and settingsDirty then applySettings() end
+    end, 0.3)
+  end
+  Controls["Discussion Mode"].EventHandler = settingsChanged
+  Controls["Number of Open Mics"].EventHandler = settingsChanged
+  Controls["Apply Discussion Settings"].EventHandler = function()
+    settingsDirty = true
+    applySettings()
+  end
+  local recordingRevision = 0
+  local function showRecording(value)
+    if type(value) ~= "table" or (value.state ~= "idle" and value.state ~= "recording") then
+      Controls["Recording State"].String = "Unknown"
+      Controls["Recording Active"].Boolean = false
+      Controls["Recording Status"].String = "Invalid recording feedback"
+      return
+    end
+    Controls["Recording Active"].Boolean = value.state == "recording"
+    Controls["Recording State"].String = value.state
+    Controls["Recording Status"].String = value.state == "recording" and "Recording" or "Stopped"
+  end
+  local function recordingError(code)
+    Controls["Recording State"].String = "Unknown"
+    Controls["Recording Active"].Boolean = false
+    Controls["Recording Status"].String = "Recording unavailable or command failed (HTTP " .. code .. ")"
+  end
+  local function refreshRecording()
+    local revision = recordingRevision
+    request("GET", "/api/recording/state", nil, 10, function(code,data)
+      if revision ~= recordingRevision then return end
+      if code == 200 then showRecording(decode(data)) else recordingError(code) end
+    end)
+  end
+  local function setRecording(state)
+    if not configured then Controls["Recording Status"].String = "Enter IP address and token on Setup"; return end
+    request("PUT", "/api/recording/state", rapidjson.encode({state=state}), 10, function(code)
+      if code == 204 then refreshRecording() else recordingError(code) end
+    end)
+  end
+  Controls["Recording Start"].EventHandler = function() setRecording("recording") end
+  Controls["Recording Stop"].EventHandler = function() setRecording("idle") end
+  local refreshScheduledMeetings
+  local function handleEvent(notification)
+    if type(notification) ~= "table" then return end
+    if notification.id then lastEventId = tonumber(notification.id) end
+    if notification.discontinuity == true then
+      recordingRevision = recordingRevision + 1
+      refreshRecording()
+      for _, path in ipairs({"/api/discussion/seats", "/api/discussion/speakers", "/api/discussion/requests"}) do
+        revisions[path] = (revisions[path] or 0) + 1
+      end
+      refreshAll()
+    end
+  
+    if notification.module == "Discussion" then
+      if notification.name == "SettingsChanged" then showSettings(notification.data)
+      elseif notification.name == "SeatChanged" then
+        revisions["/api/discussion/seats"] = (revisions["/api/discussion/seats"] or 0) + 1
+        updateSeat(notification.data)
+      elseif notification.name == "SpeakersChanged" or notification.name == "RequestsChanged" then
+        local path = notification.name == "SpeakersChanged" and "/api/discussion/speakers" or "/api/discussion/requests"
+        revisions[path] = (revisions[path] or 0) + 1
+        if type(notification.data) == "table" then
+          listEventRevisions[path] = revisions[path]
+          failures[path] = nil
+          if notification.name == "SpeakersChanged" then speakers = notification.data else requests = notification.data end
+          render()
+        end
+      end
+    elseif notification.module == "Recording" and notification.name == "StateChanged" then
+      recordingRevision = recordingRevision + 1
+      showRecording(notification.data)
+    elseif notification.module == "Room" then
+      refreshSeats()
+    elseif notification.module == "Meeting" then
+      if notification.name == "ScheduledMeetingsChanged" then refreshScheduledMeetings(); return end
+      refreshMeeting()
+      if notification.name == "MeetingStateChanged" then
+        local state = notification.data and notification.data.meetingState
+        if state == "noMeetingRunning" then
+          names = {}
+          render()
+          meetingId = ""
+          Controls["Meeting Running"].Boolean = false
+          Controls["Meeting ID"].String = ""
+          Controls["Meeting Title"].String = ""
+        end
+      end
+    end
+  end
+  
+  local function pollEvents()
+    if stopping or eventPollActive or not configured then return end
+    eventPollActive = true
+    local pollGeneration = generation
+    local path = "/api/notification/events?include-filter=Discussion,Meeting,Room,Recording"
+    if lastEventId then path = path .. "&minimum-id=" .. tostring(lastEventId + 1) end
+    request("GET", path, nil, 40, function(code, data, error, responseHeaders, idlePoll)
+      eventPollActive = false
+      if stopping then return end
+      if code == 200 then
+        handleEvent(decode(data))
+        Timer.CallAfter(function() if pollGeneration == generation then pollEvents() end end, 0.05)
+      elseif code == 204 or idlePoll then
+        render()
+        Timer.CallAfter(function() if pollGeneration == generation then pollEvents() end end, 0.05)
+      else
+        if code == 401 or code == 403 then setConnected(false, "Authorization failed")
+        elseif code == 0 then setConnected(false, error or "Event connection failed") end
+        render()
+        Timer.CallAfter(function() if pollGeneration == generation then refreshAll(); refreshRecording(); pollEvents() end end, 2)
+      end
+    end)
+  end
+  
+  for i = 1, seatCount do
+    local index = i
+    Controls["Seat Mic On"][i].EventHandler = function(control)
+      local number = seatNumbers[index]
+      local desired = control.Boolean
+      log("Mic", "Seat Mic On row=" .. index .. " seat=" .. tostring(number) .. " requested=" .. tostring(desired)
+        .. " confirmed=" .. tostring(number and seatStates[number] and seatStates[number].microphoneOn)
+        .. " connected=" .. tostring(Controls.Connected.Boolean))
+      render() -- Display confirmed controller state until feedback arrives.
+      if not number or not Controls.Connected.Boolean then
+        log("Mic", "Command skipped: " .. (not number and "no API seat mapped to this row" or ("disconnected; " .. Controls.Status.String)))
+        return
+      end
+      request("PUT", "/api/discussion/seats/" .. number,
+        rapidjson.encode({ microphoneOn = desired, requestingToSpeak = false }), 10, function(code)
+          log("Mic", "Command seat=" .. number .. " requested=" .. tostring(desired) .. " HTTP " .. code
+            .. "; reading controller feedback (HTTP success alone does not confirm mic state)")
+          revisions["/api/discussion/seats"] = (revisions["/api/discussion/seats"] or 0) + 1
+          -- A targeted read also reconciles refused commands and occupied speaker slots.
+          local revision = revisions["/api/discussion/seats"]
+          request("GET", "/api/discussion/seats/" .. number, nil, 10, function(code, data)
+            if code == 200 and revision == revisions["/api/discussion/seats"] then updateSeat(decode(data)) end
+          end)
+          refreshSeats()
+        end)
+    end
+  end
+
+  local function clearScheduledMeetings()
+    scheduledMeetings, selectedMeeting = {}, nil
+    Controls["Scheduled Meetings"].Choices = {}
+    Controls["Scheduled Meetings"].String = ""
+    Controls["Start Selected Meeting"].IsDisabled = true
+  end
+
+  refreshScheduledMeetings = function()
+    if not configured or scheduledPending then return end
+    scheduledPending = true
+    request("GET", "/api/meeting/scheduled-meetings", nil, 10, function(code, data)
+      scheduledPending = false
+      local response = code == 200 and decode(data)
+      if type(response) ~= "table" then
+        clearScheduledMeetings()
+        Controls["Meeting Command Status"].String = code == 405 and "Meeting control is not licensed on this controller"
+          or ("Could not load scheduled meetings (HTTP " .. tostring(code) .. ")")
+        return
+      end
+      local previousId = selectedMeeting and selectedMeeting.scheduledMeetingId
+      local choices, counts = {}, {}
+      scheduledMeetings, selectedMeeting = {}, nil
+      for _, meeting in ipairs(response) do
+        if type(meeting) == "table" and meeting.name and meeting.scheduledMeetingId then
+          counts[meeting.name] = (counts[meeting.name] or 0) + 1
+        end
+      end
+      for _, meeting in ipairs(response) do
+        if type(meeting) == "table" and meeting.name and meeting.scheduledMeetingId then
+          -- Distinguish duplicate titles while preserving selection by stable ID.
+          local label = meeting.name
+          if counts[label] > 1 then label = label .. " [" .. meeting.scheduledMeetingId .. "]" end
+          meeting.label = label
+          scheduledMeetings[label] = meeting
+          table.insert(choices, label)
+          if not selectedMeeting or meeting.scheduledMeetingId == previousId then selectedMeeting = meeting end
+        end
+      end
+      Controls["Scheduled Meetings"].Choices = choices
+      Controls["Scheduled Meetings"].String = selectedMeeting and selectedMeeting.label or ""
+      Controls["Start Selected Meeting"].IsDisabled = selectedMeeting == nil
+      Controls["Meeting Command Status"].String = "Loaded " .. #choices .. " scheduled meeting(s)"
+    end)
+  end
+
+  Controls["Scheduled Meetings"].EventHandler = function(control)
+    selectedMeeting = scheduledMeetings[control.String]
+    Controls["Start Selected Meeting"].IsDisabled = selectedMeeting == nil
+  end
+
+  local function postMeeting(payload, description)
+    if not configured then
+      Controls["Meeting Command Status"].String = "Enter an IP address and token first"
+      return
+    end
+    request("POST", "/api/meeting", rapidjson.encode(payload), 15, function(code)
+      if code >= 200 and code < 300 then
+        Controls["Meeting Command Status"].String = description .. " started"
+        refreshMeeting()
+        refreshSeats()
+      else
+        Controls["Meeting Command Status"].String = "Could not start " .. description .. " (HTTP " .. code .. ")"
+      end
+    end)
+  end
+
+  for name, action in pairs(listActions) do
+    local listName, actionName = name, action
+    Controls[listName].EventHandler = function(control)
+      selectedSeats[listName] = nil
+      local list = listName == "Speaking Seats" and speakers or requests
+      for _, number in ipairs(list) do
+        if control.String == tostring(number) .. " - " .. seatName(number) then
+          selectedSeats[listName] = number
+          break
+        end
+      end
+      log("Mic", listName .. " selection=" .. tostring(control.String) .. " resolved seat=" .. tostring(selectedSeats[listName]))
+      render()
+    end
+    Controls[actionName].EventHandler = function()
+      local number = selectedSeats[listName]
+      local list = listName == "Speaking Seats" and speakers or requests
+      local present = false
+      for _, seat in ipairs(list) do if seat == number then present = true; break end end
+      log("Mic", actionName .. " seat=" .. tostring(number) .. " present=" .. tostring(present)
+        .. " connected=" .. tostring(Controls.Connected.Boolean))
+      if not present or not Controls.Connected.Boolean then
+        log("Mic", "Command skipped: " .. (not present and "no valid seat selected in current list" or ("disconnected; " .. Controls.Status.String)))
+        render(); return
+      end
+      request("PUT", "/api/discussion/seats/" .. number,
+        rapidjson.encode({microphoneOn = listName == "Request Seats", requestingToSpeak = false}), 10, function(code)
+          log("Mic", actionName .. " seat=" .. number .. " HTTP " .. code .. "; refreshing seat feedback")
+          refreshSeats()
+          render()
+        end)
+    end
+  end
+
+  Controls.Refresh.EventHandler = function() refreshAll(); refreshScheduledMeetings(); refreshSettings(); refreshRecording() end
+  Controls["Start Selected Meeting"].EventHandler = function()
+    if not selectedMeeting then
+      Controls["Meeting Command Status"].String = "Select a scheduled meeting first"
+      return
+    end
+    postMeeting({kind = "NewMeetingFromScheduledMeeting", title = selectedMeeting.name,
+      scheduledMeetingId = selectedMeeting.scheduledMeetingId}, "Scheduled meeting '" .. selectedMeeting.name .. "'")
+  end
+  
+  Controls["Meeting Start"].EventHandler = function()
+    postMeeting({ kind = "NewMeetingFromLocalTemplate" }, "Open meeting")
+  end
+  
+  Controls["Meeting Stop"].EventHandler = function()
+    if not configured then Controls["Meeting Command Status"].String = "Enter an IP address and token first"; return end
+    request("DELETE", "/api/meeting", nil, 15, function(code)
+      if code >= 200 and code < 300 then
+        Controls["Meeting Command Status"].String = "Meeting stopped"
+        refreshMeeting()
+      else
+        Controls["Meeting Command Status"].String = "Could not stop meeting (HTTP " .. code .. ")"
+      end
+    end)
+  end
+  
+  Controls["Clear Speakers"].EventHandler = function()
+    request("DELETE", "/api/discussion/speakers", nil, 10, function(code)
+      if code == 204 then Timer.CallAfter(refreshSeats, 0.25) end
+    end)
+  end
+  
+  Controls["Clear Requests"].EventHandler = function()
+    request("DELETE", "/api/discussion/requests", nil, 10, function(code)
+      if code == 204 then Timer.CallAfter(refreshSeats, 0.25) end
+    end)
+  end
+  
+  local function reconnect()
+    generation = generation + 1
+    recordingRevision = recordingRevision + 1
+    Controls["Recording Active"].Boolean = false
+    Controls["Recording State"].String = "Unknown"
+    Controls["Recording Status"].String = "Not connected"
+    settings, settingsPending = nil, false
+    settingsDirty, showingSettings = false, false
+    settingsEditRevision = settingsEditRevision + 1
+    Controls["Discussion Settings Status"].String = ""
+    refreshTimer:Stop()
+    scheduledTimer:Stop()
+    scheduledPending = false
+    clearScheduledMeetings()
+    Controls["Meeting Command Status"].String = ""
+    configured = false
+    eventPollActive, lastEventId = false, nil
+    pending, revisions, failures = {}, {}, {}
+    listEventRevisions = {}
+    seatStates, seatNumbers, names, speakers, requests = {}, {}, {}, {}, {}
+    selectedSeats = {}
+    meetingId = ""
+    Controls["Meeting Running"].Boolean = false
+    Controls["Meeting ID"].String = ""
+    Controls["Meeting Title"].String = ""
+    ip = Controls["IP Address"].String:match("^%s*(.-)%s*$")
+    token = Controls["API Token"].String:match("^%s*(.-)%s*$")
+    setConnected(false, "Enter IP Address and API Token")
+    render()
+    if ip == "" or token == "" then return end
+    local address = ip:gsub("/+$", "")
+    local enteredScheme, authority = address:match("^(https?)://(.+)$")
+    authority = authority or address
+    local host, explicitPort = authority:match("^([^:]+):(%d+)$")
+    host = host or authority
+    if host:find("[/:%s?#@]") or (explicitPort and (tonumber(explicitPort) < 1 or tonumber(explicitPort) > 65535)) then
+      setStatus(1, "Enter a hostname/IP, optionally with http(s):// and port")
+      return
+    end
+    local activeScheme = enteredScheme or scheme
+    baseUrl = activeScheme .. "://" .. host .. ":" .. (explicitPort or (activeScheme == "https" and "9443" or "9080"))
+    headers = { Accept = "application/json", Authorization = "Bearer " .. token }
+    jsonHeaders = { Accept = "application/json", ["Content-Type"] = "application/json", Authorization = "Bearer " .. token }
+    configured = true
+    setStatus(4, "Connecting")
+    refreshTimer:Start(refreshInterval)
+    scheduledTimer:Start(60)
+    refreshScheduledMeetings()
+    pollEvents()
+    refreshAll()
+    refreshSettings()
+    refreshRecording()
+  end
+
+  -- Speaker/request lists are maintained by the long-poll event stream.
+  -- Periodic metadata/seat reconciliation must not poll the list endpoints.
+  refreshTimer.EventHandler = function() refreshMeeting(); refreshSeats() end
+  scheduledTimer.EventHandler = refreshScheduledMeetings
+  Controls["IP Address"].EventHandler = reconnect
+  Controls["API Token"].EventHandler = reconnect
+  reconnect()
+end

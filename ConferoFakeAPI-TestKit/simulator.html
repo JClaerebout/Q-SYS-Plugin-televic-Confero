@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Confero simulator</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#eef2f6;color:#182b3b;font:16px system-ui}main{max-width:1180px;margin:auto;padding:32px}h1{margin:0}h2{font-size:19px}p{color:#526677}section{background:white;border:1px solid #d7e0e7;border-radius:12px;padding:20px;margin:18px 0}.row{display:flex;gap:14px;align-items:end;flex-wrap:wrap}label{display:grid;gap:6px;font-size:14px}input,button{font:inherit;border:1px solid #bdcbd7;border-radius:6px;padding:9px}button{cursor:pointer;background:#17668f;color:white;border:0}button.secondary{background:#e5ecf2;color:#203a50}button:disabled{opacity:.45;cursor:default}.cols{display:grid;grid-template-columns:1fr 1fr;gap:18px}.badge{font-size:13px;border-radius:20px;padding:5px 10px;background:#e6edf3}.on{background:#d0f3df;color:#116e40}.request{background:#fff0c7;color:#805a00}table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:10px 6px;border-bottom:1px solid #e6ecf1}td input{width:100%}#status{min-height:24px}ol{padding-left:25px;line-height:1.8}@media(max-width:650px){main{padding:14px}.cols{grid-template-columns:1fr}td,th{padding:7px 3px}}
+</style>
+<main><h1>Confero simulator</h1><p>Control the room here and watch live microphone feedback in Q-SYS.</p>
+<section class="row"><label>API token<input id="token" type="password" value="qsys-test-token" autocomplete="off"></label><button id="connect">Connect</button><span id="connection">Disconnected</span></section>
+<div id="status" role="status" aria-live="polite"></div>
+<section><h2>Room & meeting</h2><div class="row"><label>Number of microphones<input id="count" type="number" min="1" max="100" value="10"></label><label>Maximum open at once<input id="maximum" type="number" min="1" max="100" value="3"></label><label>Scheduled meeting name<input id="title" value="Council meeting"></label><button id="save">Apply room & names</button></div>
+<p>When all slots are occupied, additional activations join the request list. Turning off a speaking mic automatically enables the first waiting seat. Lowering the limit moves excess speakers into requests. All mics off clears speakers without admitting requests.</p>
+<p id="meeting">No meeting running</p><p>In the plugin, press Refresh, select this scheduled meeting, and press Start Selected Meeting. Seat names below become its participant names.</p></section>
+<div class="cols"><section><h2>Speaking <span id="speakerCount" class="badge">0</span></h2><ol id="speakers"></ol><button id="clearSpeakers" class="secondary">All mics off</button></section><section><h2>Requests <span id="requestCount" class="badge">0</span></h2><ol id="requests"></ol><button id="clearRequests" class="secondary">Clear requests</button></section></div>
+<section><h2>Seats</h2><p>Edit names, then press Apply room & names. Changes also update a running meeting.</p><table><thead><tr><th>Seat</th><th>Name</th><th>Status</th><th>Microphone</th></tr></thead><tbody id="seats"></tbody></table></section></main>
+<script>
+const $=id=>document.getElementById(id);let connected=false,initialized=false,busy=false,revision=0;
+async function api(path,method='GET',body){const r=await fetch(path,{method,headers:{Authorization:'Bearer '+$('token').value.trim(),'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});if(!r.ok){let message='HTTP '+r.status;try{message=(await r.json()).message||message}catch{}throw Error(message)}return r.status===204?null:r.json()}
+function showError(e){$('status').textContent=e.message}
+function render(s){
+ if(!initialized){$('count').value=s.seatCount;$('maximum').value=s.maxOpen;$('title').value=s.meetingName;initialized=true}
+ $('meeting').textContent=s.meeting?'Running: '+s.meeting.title:'No meeting running';
+ const valid=new Set(s.seats.map(x=>String(x.seatNumber)));for(const row of [...$('seats').children])if(!valid.has(row.dataset.seat))row.remove();
+ for(const seat of s.seats){let row=$('seats').querySelector('[data-seat="'+seat.seatNumber+'"]');if(!row){row=document.createElement('tr');row.dataset.seat=seat.seatNumber;const number=document.createElement('td');number.textContent=seat.seatNumber;const name=document.createElement('td');const input=document.createElement('input');input.value=seat.name;input.setAttribute('aria-label','Name for seat '+seat.seatNumber);name.append(input);const state=document.createElement('td');state.className='state';const actions=document.createElement('td');for(const on of [true,false]){const b=document.createElement('button');b.textContent=on?'On':'Off';b.className=on?'':'secondary';b.onclick=()=>action('/api/discussion/seats/'+seat.seatNumber,'PUT',{microphoneOn:on});actions.append(b,document.createTextNode(' '))}row.append(number,name,state,actions);$('seats').append(row)}const state=row.querySelector('.state');state.textContent=seat.microphoneOn?'Speaking':seat.requestingToSpeak?'Requesting':'Off';state.className='state '+(seat.microphoneOn?'on':seat.requestingToSpeak?'request':'');}
+ for(const key of ['speakers','requests']){$(key).replaceChildren();for(const n of s[key]){const li=document.createElement('li');li.textContent=n+' — '+(s.seats.find(x=>x.seatNumber===n)?.name||'Seat '+n);$(key).append(li)}}$('speakerCount').textContent=s.speakers.length;$('requestCount').textContent=s.requests.length;
+}
+async function refresh(){if(busy||!connected)return;busy=true;const current=revision;try{const s=await api('/sim/state');if(current===revision){render(s);$('connection').textContent='Connected'}}catch(e){$('connection').textContent='Connection failed';showError(e)}finally{busy=false}}
+async function action(path,method,body){try{await api(path,method,body);$('status').textContent='Updated';await refresh()}catch(e){showError(e)}}
+$('connect').onclick=()=>{revision++;initialized=false;connected=true;refresh()};
+$('save').onclick=()=>{const names={};for(const row of $('seats').children)names[row.dataset.seat]=row.querySelector('input').value;action('/sim/config','PUT',{seatCount:Number($('count').value),maxOpen:Number($('maximum').value),meetingName:$('title').value,names})};
+$('clearSpeakers').onclick=()=>action('/api/discussion/speakers','DELETE');$('clearRequests').onclick=()=>action('/api/discussion/requests','DELETE');
+setInterval(refresh,1000);$('connect').click();
+</script></html>
