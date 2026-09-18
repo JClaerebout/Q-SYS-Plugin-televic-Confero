@@ -230,4 +230,8 @@ See the [test instructions](ConferoFakeAPI-TestKit/TESTING.md) for simulator set
 
 ## Author
 
-**Jens Claerebout**
+Jens Claerebout
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
