@@ -1,5 +1,5 @@
-﻿# Q-SYS Plugin for Televic Confero (Plixus)
-
+﻿# Unofficial Televic Confero plugin for Q-SYS, providing meeting, microphone and seat control. (In Development)
+ 
 ## Overview
 
 The **Televic Confero (Plixus) Q-SYS Plugin** enables monitoring and control of Televic conference systems directly from Q-SYS through the Confero Customer API.
