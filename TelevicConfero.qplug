@@ -1,9 +1,9 @@
--- Televic Confero (Plixus) Q-SYS Plugin v1.1.0
+-- Televic Confero (Plixus) Q-SYS Plugin v1.1.1
 -- Confero Customer API 7.18
 PluginInfo = {
   Name = "Televic Confero (Plixus)",
-  Version = "1.1.0",
-  BuildVersion = "1.1.0.0",
+  Version = "1.1.1",
+  BuildVersion = "1.1.1.0",
   Id = "6c9ca9e2-6f14-45d9-a55d-4a5d39b8dba0",
   Author = "Jens Claerebout",
   Description = "Control Televic Confero meetings and Plixus seat microphones through Customer API 7.18."
@@ -32,6 +32,8 @@ function GetControls(props)
     { Name = "Recording Active", ControlType = "Indicator", IndicatorType = "Led", PinStyle = "Output", UserPin = true },
     { Name = "Recording State", ControlType = "Text", PinStyle = "Output", UserPin = true },
     { Name = "Recording Status", ControlType = "Text", PinStyle = "Output", UserPin = true },
+    { Name = "Wireless Turn Off", ControlType = "Button", ButtonType = "Trigger", PinStyle = "Input", UserPin = true },
+    { Name = "Wireless Status", ControlType = "Text", PinStyle = "Output", UserPin = true },
     { Name = "Discussion Mode", ControlType = "Text", PinStyle = "Both", UserPin = true },
     { Name = "Number of Open Mics", ControlType = "Knob", ControlUnit = "Integer", Min = 1, Max = 100, DefaultValue = 3, PinStyle = "Both", UserPin = true },
     { Name = "Apply Discussion Settings", ControlType = "Button", ButtonType = "Trigger", PinStyle = "Input", UserPin = true },
@@ -76,6 +78,7 @@ function GetPages(props)
   end
   table.insert(pages, {name="Active / Request List"})
   table.insert(pages, {name="Recording"})
+  table.insert(pages, {name="Wireless"})
   return pages
 end
 
@@ -180,7 +183,7 @@ function GetControlLayout(props)
   end
   local page = props["page_index"] and props["page_index"].Value or 1
   local seatPages = math.ceil(seats / 15)
-  local listPage, recordingPage = 3 + seatPages, 4 + seatPages
+  local listPage, recordingPage, wirelessPage = 3 + seatPages, 4 + seatPages, 5 + seatPages
   local selected = {}
   for name, item in pairs(layout) do
     local target = 1
@@ -222,6 +225,10 @@ function GetControlLayout(props)
     selected["Recording Active"]={Style="LED",Color={255,0,0},Position={10,100},Size={28,28}}
     selected["Recording State"]={Style="Text",IsReadOnly=true,Position={50,100},Size={290,28}}
     selected["Recording Status"]={Style="Text",IsReadOnly=true,Position={10,145},Size={640,40}}
+  elseif page == wirelessPage then
+    label("Wireless devices",10,0,640)
+    selected["Wireless Turn Off"]={Style="Button",Legend="Turn Off",Position={10,45},Size={160,36}}
+    selected["Wireless Status"]={Style="Text",IsReadOnly=true,Position={10,100},Size={640,40}}
   end
   return selected, graphics
 end
@@ -575,6 +582,16 @@ if Controls then
   end
   Controls["Recording Start"].EventHandler = function() setRecording("recording") end
   Controls["Recording Stop"].EventHandler = function() setRecording("idle") end
+  Controls["Wireless Turn Off"].EventHandler = function()
+    if not configured then Controls["Wireless Status"].String = "Enter IP address and token on Setup"; return end
+    request("POST", "/api/device/devices/actions", rapidjson.encode({action="turnOff"}), 10, function(code)
+      if code >= 200 and code < 300 then
+        Controls["Wireless Status"].String = "Turn off command sent"
+      else
+        Controls["Wireless Status"].String = "Turn off failed (HTTP " .. tostring(code) .. ")"
+      end
+    end)
+  end
   local refreshScheduledMeetings
   local function handleEvent(notification)
     if type(notification) ~= "table" then return end

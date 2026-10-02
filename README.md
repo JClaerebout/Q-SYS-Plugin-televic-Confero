@@ -18,6 +18,7 @@ It provides per-seat microphone control, active speaker and request lists, meeti
 - Start an open meeting or a selected scheduled meeting, and stop the current meeting
 - Set discussion mode and maximum number of open microphones
 - Start and stop recording with state feedback
+- Turn off wireless devices with a momentary button
 - Receive changes through long-poll notifications
 - Automatically refresh seat status and recover communication after controller outages
 - Expose controls and feedback as Q-SYS control pins
@@ -30,8 +31,8 @@ It provides per-seat microphone control, active speaker and request lists, meeti
 | -------- | ----- |
 | Name | Televic Confero (Plixus) |
 | File | `TelevicConfero.qplug` |
-| Version | 1.1.0 |
-| Build Version | 1.1.0.0 |
+| Version | 1.1.1 |
+| Build Version | 1.1.1.0 |
 | Author | Jens Claerebout |
 | API Target | Confero Customer API 7.18 (Plixus) |
 | Protocol | HTTP / HTTPS API |
@@ -113,6 +114,13 @@ Changing the address or token reconnects automatically. An explicit URL can spec
 | `Recording State` | Output | `idle`, `recording`, or `Unknown` feedback |
 | `Recording Status` | Output | Recording operation status |
 
+### Wireless Controls
+
+| Control | Pin | Description |
+| ------- | --- | ----------- |
+| `Wireless Turn Off` | Input | Momentary button that sends `POST /api/device/devices/actions` with `{"action":"turnOff"}` |
+| `Wireless Status` | Output | Result of the turn off command |
+
 ---
 
 ## UI Layout
@@ -124,6 +132,7 @@ Changing the address or token reconnects automatically. An explicit URL can spec
 | Seats | Seat number, name, role, microphone toggle, and request LED; up to 15 rows per page |
 | Active / Request List | Speaker/request lists, counts, selected-seat actions, and clear-list buttons |
 | Recording | Start/stop recording, recording LED, state, and operation status |
+| Wireless | Turn off button and command status |
 
 Seat pages are created automatically. A Seat Count of 1-15 creates one **Seats** page; 16-30 creates **Seats 1** and **Seats 2**, with further pages added as needed.
 
@@ -146,6 +155,7 @@ The plugin uses JSON requests with Bearer token authentication and a long-poll n
 | `/api/meeting/scheduled-meetings` | GET | Retrieve scheduled meetings |
 | `/api/notification/events` | GET | Receive long-poll notifications |
 | `/api/recording/state` | GET / PUT | Read or change recording state |
+| `/api/device/devices/actions` | POST | Turn off wireless devices |
 
 ### Notifications and Refresh
 
