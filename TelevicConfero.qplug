@@ -1,9 +1,9 @@
 -- Televic Confero (Plixus) Q-SYS Plugin v1.1.1
 -- Confero Customer API 7.18
+BuildVersion = "1.1.1.0"
 PluginInfo = {
-  Name = "Televic Confero (Plixus)",
-  Version = "1.1.1",
-  BuildVersion = "1.1.1.0",
+  Name = "Televic~Televic Confero (Plixus) v" .. BuildVersion, -- preferred format is "manufacturer~plugin name version"
+  Version = BuildVersion,
   Id = "6c9ca9e2-6f14-45d9-a55d-4a5d39b8dba0",
   Author = "Jens Claerebout",
   Description = "Control Televic Confero meetings and Plixus seat microphones through Customer API 7.18."
