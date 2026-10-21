@@ -30,8 +30,9 @@ for _, count in ipairs({1, 3, 10, 15, 16, 30, 31, 100}) do
   Properties["Seat Count"].Value = count
   local seatLayout = {}
   local pages = GetPages(Properties)
-  assert(#pages == 4 + math.ceil(count / 15))
-  assert(pages[#pages - 1].name == "Active / Request List" and pages[#pages].name == "Recording")
+  assert(#pages == 5 + math.ceil(count / 15))
+  assert(pages[#pages - 2].name == "Active / Request List" and pages[#pages - 1].name == "Recording")
+  assert(pages[#pages].name == "Wireless")
   for page = 1, #pages do
     Properties.page_index = {Value=page}
     for key, item in pairs(GetControlLayout(Properties)) do
@@ -327,6 +328,30 @@ g.edit('API Token', 'test-token')
 initial_settings = dict(microphoneMode='directSpeak', maximumNumberOfSpeakers=3,
                         options=dict(microphoneActivationType='toggle'))
 reply('/api/discussion/settings', initial_settings)
+# Full delegate floor preserves a request; privileged requesters bypass it.
+reply('/api/discussion/seats', [dict(seatNumber=n, microphoneOn=n != 42,
+    requestingToSpeak=n == 42, role='delegate') for n in (7, 42, 101)])
+reply('/api/discussion/requests', [42])
+reply('/api/notification/events', dict(id=2, module='Discussion', name='SettingsChanged',
+    data=dict(microphoneMode='request', maximumNumberOfSpeakers=2, options={})))
+g.edit('Request Seats', g.Controls['Request Seats'].Choices[1])
+assert g.Controls['Enable Requested Mic'].IsDisabled
+g.Controls['Enable Requested Mic'].EventHandler()
+assert not any(r.Method == 'PUT' for _, r in g.outbound.items())
+assert len(g.Controls['Request Seats'].Choices) == 1
+# Settings feedback alone must update eligibility for the retained selection.
+for maximum, disabled in ((3, False), (2, True)):
+    lua.eval('table.remove')(g.scheduled, 1)()
+    reply('/api/notification/events', dict(id=3, module='Discussion', name='SettingsChanged',
+        data=dict(microphoneMode='request', maximumNumberOfSpeakers=maximum, options={})))
+    assert g.Controls['Enable Requested Mic'].IsDisabled == disabled
+for role in ('chairperson', 'vip'):
+    lua.eval('table.remove')(g.scheduled, 1)()
+    reply('/api/notification/events', dict(id=3, module='Discussion', name='SeatChanged',
+        data=dict(seatNumber=42, microphoneOn=False, requestingToSpeak=True, role=role)))
+    assert not g.Controls['Enable Requested Mic'].IsDisabled
+    g.Controls['Enable Requested Mic'].EventHandler()
+    assert json.loads(g.take('/api/discussion/seats/42', 'PUT').Data)['microphoneOn']
 g.edit('Discussion Mode', 'Operator')
 maximum = g.Controls['Number of Open Mics']
 maximum.Value = 5

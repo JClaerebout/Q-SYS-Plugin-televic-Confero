@@ -31,8 +31,8 @@ It provides per-seat microphone control, active speaker and request lists, meeti
 | -------- | ----- |
 | Name | Televic Confero (Plixus) |
 | File | `TelevicConfero.qplug` |
-| Version | 1.1.1 |
-| Build Version | 1.1.1.0 |
+| Version | 1.1.2 |
+| Build Version | 1.1.2.0 |
 | Author | Jens Claerebout |
 | API Target | Confero Customer API 7.18 (Plixus) |
 | Protocol | HTTP / HTTPS API |
@@ -175,7 +175,7 @@ Seats are sorted by their actual seat numbers, so gaps such as 7, 42, and 101 ar
 
 Participant names come from the current meeting, matched using `presence.seatNumber`. When an assigned participant name or meeting access is unavailable, the display uses `Seat N`.
 
-Microphone commands send both `microphoneOn` and `requestingToSpeak: false`. Enabling or disabling a microphone also clears its pending request. This applies to both seat toggles and selected-list actions. An HTTP success alone does not confirm a microphone change; the plugin uses subsequent seat feedback.
+Microphone commands send both `microphoneOn` and `requestingToSpeak: false`. Enabling or disabling a microphone also clears its pending request. In Request mode, activation is blocked when the confirmed delegate microphone count reaches the configured maximum, preserving the request. Enable Requested Mic is disabled for the selected delegate at capacity and updates automatically when controller feedback confirms a changed limit or microphone state. Chairpersons and VIPs bypass the limit check and do not consume delegate slots. This check uses the latest received controller feedback. This applies to both seat toggles and selected-list actions. An HTTP success alone does not confirm a microphone change; the plugin uses subsequent seat feedback.
 
 ### Speaker and Request Lists
 

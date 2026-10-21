@@ -1,6 +1,6 @@
--- Televic Confero (Plixus) Q-SYS Plugin v1.1.1
+-- Televic Confero (Plixus) Q-SYS Plugin v1.1.2
 -- Confero Customer API 7.18
-BuildVersion = "1.1.1.0"
+BuildVersion = "1.1.2.0"
 PluginInfo = {
   Name = "Televic~Televic Confero (Plixus) v" .. BuildVersion, -- preferred format is "manufacturer~plugin name version"
   Version = BuildVersion,
@@ -357,6 +357,23 @@ if Controls then
     return names[number] or ("Seat " .. tostring(number))
   end
 
+  local settings
+  local function activationAllowed(number, quiet)
+    if not settings or settings.microphoneMode ~= "request" then return true end
+    local seat = seatStates[number]
+    if seat and (seat.microphoneOn or seat.role == "chairperson" or seat.role == "vip") then return true end
+    local count = 0
+    for _, state in pairs(seatStates) do
+      if state.microphoneOn and state.role ~= "chairperson" and state.role ~= "vip" then count = count + 1 end
+    end
+    if count < settings.maximumNumberOfSpeakers then return true end
+    if not quiet then
+      log("Mic", "Activation skipped for seat=" .. number .. ": open microphone limit reached; request retained")
+      setStatus(1, "Open microphone limit reached; turn off a delegate mic first")
+    end
+    return false
+  end
+
   local function render()
     for i = 1, seatCount do
       local number = seatNumbers[i]
@@ -379,6 +396,7 @@ if Controls then
       Controls[list[2]].Choices = lines
       Controls[list[2]].String = selectedLabel
       Controls[listActions[list[2]]].IsDisabled = selectedSeats[list[2]] == nil or not Controls.Connected.Boolean
+        or (list[2] == "Request Seats" and not activationAllowed(selectedSeats[list[2]], true))
       Controls[list[3]].String = tostring(#lines)
     end
   end
@@ -481,7 +499,7 @@ if Controls then
     refreshLists()
   end
   
-  local settings, settingsPending = nil, false
+  local settingsPending = false
   local settingsDirty, showingSettings = false, false
   local settingsEditRevision = 0
   local modeNames = {"Direct Speak", "Request", "Group", "Operator", "Hands Free"}
@@ -499,6 +517,7 @@ if Controls then
     for i, id in ipairs(modeIds) do
       if id == value.microphoneMode then
         settings = value
+        render() -- Re-evaluate request activation against confirmed settings.
         modeOptions[id] = value.options
         -- Retain local edits while a write or its successor is outstanding.
         if settingsPending or settingsDirty then return end
@@ -679,6 +698,7 @@ if Controls then
         log("Mic", "Command skipped: " .. (not number and "no API seat mapped to this row" or ("disconnected; " .. Controls.Status.String)))
         return
       end
+      if desired and not activationAllowed(number) then return end
       request("PUT", "/api/discussion/seats/" .. number,
         rapidjson.encode({ microphoneOn = desired, requestingToSpeak = false }), 10, function(code)
           log("Mic", "Command seat=" .. number .. " requested=" .. tostring(desired) .. " HTTP " .. code
@@ -785,6 +805,7 @@ if Controls then
         log("Mic", "Command skipped: " .. (not present and "no valid seat selected in current list" or ("disconnected; " .. Controls.Status.String)))
         render(); return
       end
+      if listName == "Request Seats" and not activationAllowed(number) then return end
       request("PUT", "/api/discussion/seats/" .. number,
         rapidjson.encode({microphoneOn = listName == "Request Seats", requestingToSpeak = false}), 10, function(code)
           log("Mic", actionName .. " seat=" .. number .. " HTTP " .. code .. "; refreshing seat feedback")
