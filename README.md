@@ -223,13 +223,11 @@ When upgrading a G4 design, select **G4** to enable the Wireless page and per-se
 
 ---
 
-## Troubleshooting and Testing
+## Troubleshooting
 
 Set **Debug Print** to **All** and open the Q-SYS debug output. Toggle a seat microphone or select a list entry and press its microphone action.
 
 Logs show the mapped seat, requested and confirmed state, skipped-command reasons, HTTP request body, response/error, and seat feedback. **Tx/Rx** includes microphone action logs; **All** additionally includes snapshot row mappings and stale-read diagnostics. **None** disables logging. Authorization headers are not printed.
-
-See the [test instructions](ConferoFakeAPI-TestKit/TESTING.md) for simulator setup and validation. Automated tests mock the Q-SYS runtime; final validation in Designer and against a physical controller is still required.
 
 ---
 
@@ -240,8 +238,6 @@ See the [test instructions](ConferoFakeAPI-TestKit/TESTING.md) for simulator set
 - The 1-100 open-microphone range is a plugin limit; a controller may reject unsupported values.
 - Recording availability depends on the controller. Unknown or unavailable recording feedback is shown as `Unknown`.
 - Recording controls do not include duration, filename, storage, pause, or a recording list.
-- The simulator stores discussion modes and enforces the speaker limit, but does not reproduce every mode's hardware behavior.
-- The simulator emulates recording state and events only; it does not record audio.
 
 ---
 
