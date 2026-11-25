@@ -13,6 +13,10 @@ lua.execute('''
 Properties = {}
 for _, property in ipairs(GetProperties()) do Properties[property.Name] = property end
 assert(Properties["IP Address"] == nil and Properties["API Token"] == nil)
+assert(Properties["System Type"].Value == "Plixus")
+assert(Properties["System Type"].Type == "enum")
+assert(table.concat(Properties["System Type"].Choices, ",") == "G4,Plixus")
+Properties["System Type"].Value = "G4"
 Properties["Seat Count"].Value = 3
 Controls = {}
 for _, definition in ipairs(GetControls(Properties)) do
@@ -41,7 +45,8 @@ for _, count in ipairs({1, 3, 10, 15, 16, 30, 31, 100}) do
       if key:match("^Seat ") then
         local row = tonumber(key:match(" (%d+)$")) or 1
         assert(page == 3 + math.floor((row - 1) / 15), "Seat on wrong page: " .. key)
-        assert(item.Position[2] == 56 + ((row - 1) % 15) * 30, "Seat row position: " .. key)
+        local readoutOffset = key:match("^Seat Battery [AB] Readout") and 6 or 0
+        assert(item.Position[2] == 56 + ((row - 1) % 15) * 30 + readoutOffset, "Seat row position: " .. key)
       end
     end
   end
@@ -50,17 +55,28 @@ for _, count in ipairs({1, 3, 10, 15, 16, 30, 31, 100}) do
     for i = 1, definition.Count or 1 do
       local key = definition.Name .. ((definition.Count or 1) > 1 and (" " .. i) or "")
       assert(seatLayout[key] and seatLayout[key].Position and seatLayout[key].Style, "Missing layout: " .. key)
+      if definition.Name == "Seat Battery A" or definition.Name == "Seat Battery B" then
+        assert(definition.ControlType == "Knob" and definition.ControlUnit == "Percent")
+        assert(definition.Min == 0 and definition.Max == 100 and definition.PinStyle == "Output")
+        assert(seatLayout[key].Style == "None")
+      elseif definition.Name:match("^Seat Battery [AB] Readout$") then
+        assert(seatLayout[key].Style == "Text" and seatLayout[key].IsReadOnly)
+      end
     end
   end
 end
 Properties["Seat Count"].Value = 3
-outbound, scheduled = {}, {}
+outbound, scheduled, timers = {}, {}, {}
 HttpClient = {
   Download = function(r) table.insert(outbound, r) end,
   Upload = function(r) table.insert(outbound, r) end
 }
 Timer = {
-  New = function() return {Start = function() end, Stop = function() end} end,
+  New = function()
+    local timer = {Start = function() end, Stop = function() end}
+    table.insert(timers, timer)
+    return timer
+  end,
   CallAfter = function(f) table.insert(scheduled, f) end
 }
 function take(path, method)
@@ -313,14 +329,26 @@ Controls = nil
 lua.execute(source)
 lua.execute('''
 Properties["Seat Count"].Value = 1
-Controls = {}
-for _, d in ipairs(GetControls(Properties)) do Controls[d.Name] = {String = "", Boolean = false, Value = 0} end
+Controls, outbound, scheduled = {}, {}, {}
+for _, d in ipairs(GetControls(Properties)) do
+  Controls[d.Name] = {String = d.ControlType ~= "Knob" and "" or nil, Boolean = false, Value = 0}
+end
 ''')
 lua.execute(source)
 assert g.Controls['Seat Mic On'].IsDisabled
+g.edit('IP Address', '192.0.2.1')
+g.edit('API Token', 'test-token')
+room_path = '/api/room/seats/discussion'
+device_path = '/api/device/devices'
+reply('/api/discussion/seats', [seats[0]])
+reply(room_path, [dict(seatNumber=42, state='online', units=[])])
+assert g.Controls['Seat Status'].String == 'Online'
+for slot in ('A', 'B'):
+    assert g.Controls[f'Seat Battery {slot}'].IsIndeterminate
+    assert g.Controls[f'Seat Battery {slot} Readout'].String == '—'
+g.edit('API Token', '')
 print('PASS: Lua layout/runtime, credentials, sparse seats, names, mic-only commands, live feedback, ordered lists, stale reads, reconnect, rejected commands, scalar controls')
 
-# Exercise the simulator over real loopback HTTP as well as the Lua mocks.
 # Automatic settings coalesce edits and retain edits made during an HTTP write.
 g.outbound, g.scheduled = lua.table(), lua.table()
 g.edit('IP Address', '192.0.2.1')
@@ -383,10 +411,140 @@ while len(g.scheduled):
 assert len(g.outbound) == 0
 print('PASS: automatic settings, coalesced edits, edits during PUT, feedback protection, reconnect cancellation')
 
+# Sparse and reordered metadata, with a wireless unit moving across Seat pages.
+lua.execute('''
+Properties["Seat Count"].Value = 16
+Controls, outbound, scheduled, timers = {}, {}, {}, {}
+for _, d in ipairs(GetControls(Properties)) do
+  local function control() return {String = "", Boolean = false, Value = 0} end
+  if d.Count then
+    Controls[d.Name] = {}
+    for i = 1, d.Count do Controls[d.Name][i] = control() end
+  else Controls[d.Name] = control() end
+end
+''')
+lua.execute(source)
+g.edit('IP Address', '192.0.2.1')
+g.edit('API Token', 'test-token')
+numbers = list(range(101, 131, 2))
+reply('/api/discussion/seats', [dict(seatNumber=n) for n in numbers[::-1] + [7]])
+assert g.Controls['Seat Number'][16].String == '129'
+room = [dict(seatNumber=129, state='online', units=['wired']),
+        dict(seatNumber=7, state='online', units=['wireless'])]
+wireless = dict(serial='wireless', deviceType='confideaG4Flex', state='online', powerState={
+    'batteryStatus': {'details': [dict(slotName='slotB', percentage=65), dict(slotName='slotA', percentage=80)]}})
+wired = dict(serial='wired', state='online', deviceType='confideaFlex', powerState={'powerSource': 'plixus'})
+seat_status = g.Controls['Seat Status']
+
+def assert_batteries(row, a=None, b=None):
+    for slot, percent in (('A', a), ('B', b)):
+        meter = g.Controls[f'Seat Battery {slot}'][row]
+        readout = g.Controls[f'Seat Battery {slot} Readout'][row]
+        assert meter.Position == (percent or 0) / 100
+        assert meter.IsIndeterminate == (percent is None)
+        assert readout.IsIndeterminate == (percent is None)
+        assert readout.String == ('—' if percent is None else f'{percent}%')
+
+reply(device_path, [wireless, wired])
+assert seat_status[1].String == 'Unknown'
+assert_batteries(1)
+reply(room_path, room)
+assert seat_status[1].String == seat_status[16].String == 'Online'
+assert_batteries(1, 80, 65)
+assert_batteries(16)
+assert seat_status[2].String == 'Unknown'
+
+# A Room event supersedes the pending reads and reassigns the battery by seat number.
+g.Controls.Refresh.EventHandler()
+reply('/api/notification/events', dict(id=1, module='Room', name='SeatChanged', data=room[0]))
+reply(room_path, [])  # Superseded by the Room event, including a successful stale response.
+reply(device_path, [])
+assert_batteries(1, 80, 65)
+room[0]['units'].append('wireless')
+room[1]['units'] = ['unmatched']
+reply(room_path, room)
+reply(device_path, [wired, wireless])
+assert_batteries(1)
+assert_batteries(16, 80, 65)
+
+wireless['state'] = 'offline'
+g.timers[1].EventHandler()
+reply(device_path, [wireless, wired])  # An offline unit may still report its last charge.
+reply(room_path, room)
+assert_batteries(16)
+assert seat_status[16].String == 'Online'
+wireless['state'] = 'online'
+wireless['powerState']['batteryStatus']['details'] = [dict(slotName='slotB', percentage=0)]
+g.timers[1].EventHandler()
+reply(room_path, room)
+reply(device_path, [wired, wireless])
+assert_batteries(16, b=0)
+
+g.Controls.Refresh.EventHandler()
+room[0]['state'] = 'offline'
+reply(room_path, room)
+reply(device_path, [wireless, wired])
+assert seat_status[16].String == 'Offline'
+assert_batteries(16)
+g.Controls.Refresh.EventHandler()
+room[0]['state'] = 'online'
+reply(room_path, room)
+reply(device_path, None, 401)
+assert seat_status[16].String == 'Online'
+assert_batteries(16)
+assert g.Controls.Connected.Boolean and not g.Controls['Seat Mic On'][16].IsDisabled
+g.Controls.Refresh.EventHandler()
+reply(room_path, None, 503)
+reply(device_path, [wireless])
+assert seat_status[16].String == 'Unknown'
+assert_batteries(16)
+assert g.Controls.Connected.Boolean
+g.Controls.Refresh.EventHandler()
+reply(room_path, room)
+reply(device_path, [wireless])
+assert_batteries(16, b=0)
+g.Controls.Refresh.EventHandler()
+old_room, old_devices = g.take(room_path), g.take(device_path)
+g.outbound = lua.table()
+g.edit('API Token', 'new-token')
+old_room.EventHandler(old_room, 200, json.dumps(room), None, lua.table())
+old_devices.EventHandler(old_devices, 200, json.dumps([wireless]), None, lua.table())
+reply('/api/discussion/seats', [dict(seatNumber=129)])
+assert seat_status[1].String == 'Unknown'
+assert_batteries(1)
+print('PASS: seat telemetry, sparse/reordered mapping, page 2, Room events, two slots, 0%, offline recovery, endpoint errors and reconnect')
+
+lua.execute('''
+Properties["System Type"].Value = "Plixus"
+Properties["Seat Count"].Value = 1
+local pages = GetPages(Properties)
+assert(#pages == 5 and pages[#pages].name == "Recording")
+Properties.page_index = {Value = 3}
+local layout = GetControlLayout(Properties)
+Properties.page_index = nil
+assert(layout["Seat Status"] and not layout["Seat Battery A"] and not layout["Seat Battery B"])
+Controls, outbound, scheduled, timers = {}, {}, {}, {}
+for _, d in ipairs(GetControls(Properties)) do
+  assert(not d.Name:match("^Seat Battery") and not d.Name:match("^Wireless"))
+  Controls[d.Name] = {String = "", Boolean = false, Value = 0}
+end
+''')
+lua.execute(source)
+g.edit('IP Address', '192.0.2.1')
+g.edit('API Token', 'test-token')
+reply('/api/discussion/seats', [dict(seatNumber=42)])
+reply(room_path, [dict(seatNumber=42, state='online', units=['wired'])])
+assert g.Controls['Seat Status'].String == 'Online'
+g.Controls.Refresh.EventHandler()
+g.timers[1].EventHandler()
+assert not any(device_path in request.Url for _, request in g.outbound.items())
+print('PASS: Plixus seat status, G4-only controls and polling, G4 battery readout layouts')
+
+# Exercise the simulator over real loopback HTTP as well as the Lua mocks.
 from ConferoFakeAPI import ConferoServer, Handler
 from threading import Thread
 from urllib.request import Request, urlopen
-server = ConferoServer(('127.0.0.1', 0), Handler, 3, 'test', 0.1)
+server = ConferoServer(('127.0.0.1', 0), Handler, 3, 'test', 0.1, 'G4')
 worker = Thread(target=server.serve_forever, daemon=True)
 worker.start()
 def api(path, method='GET', body=None):
@@ -397,6 +555,16 @@ def api(path, method='GET', body=None):
         raw = response.read()
         return json.loads(raw) if raw else None
 try:
+    room = api(room_path)
+    serial = room[0]['units'][0]
+    devices = {d['serial']: d for d in api(device_path)}
+    device = devices[serial]
+    assert device['deviceType'] == 'confideaG4Flex'
+    assert device['powerState']['batteryStatus']['details'][1]['percentage'] == 65
+    assert len(devices) == len(room) and all(
+        len(seat['units']) == 1 and len(devices[seat['units'][0]]['powerState']['batteryStatus']['details']) == 2
+        for seat in room)
+    displaced = room[2]['units'][0]
     api('/api/meeting', 'POST', {'kind': 'NewMeetingFromLocalTemplate'})
     assert len(api('/api/meeting')['participants']) == 3
     api('/api/discussion/seats/3', 'PUT', {'microphoneOn': True})
@@ -409,8 +577,24 @@ try:
     assert api('/api/discussion/requests') == [1]
     api('/api/discussion/requests', 'DELETE')
     assert api('/api/discussion/requests') == []
+    api('/sim/wireless', 'PUT', dict(serial=serial, seatNumber=3, state='offline', batteries=dict(slotA=None, slotB=0)))
+    room = api(room_path)
+    assert room[0]['units'] == [displaced] and room[2]['units'] == [serial]
+    events_path = '/api/notification/events?include-filter=Room&minimum-id='
+    event = api(events_path + '1')
+    assert event['name'] == 'SeatChanged' and event['data'] == room[0]
+    event = api(events_path + str(event['id'] + 1))
+    assert event['name'] == 'SeatChanged' and event['data'] == room[2]
+    assert next(d for d in api(device_path) if d['serial'] == serial)['state'] == 'offline'
+    api('/sim/seat-state', 'PUT', dict(seatNumber=3, state='offline'))
+    event = api(events_path + str(event['id'] + 1))
+    assert event['data'] == api(room_path)[2] and event['data']['state'] == 'offline'
+    api('/sim/wireless', 'PUT', dict(serial=serial, seatNumber=3, state='online', batteries=dict(slotA=None, slotB=0)))
+    device = next(d for d in api(device_path) if d['serial'] == serial)
+    assert device['state'] == 'online'
+    assert [(d['slotName'], d['percentage']) for d in device['powerState']['batteryStatus']['details']] == [('slotB', 0)]
 finally:
     server.shutdown()
     server.server_close()
     worker.join(timeout=2)
-print('PASS: simulator HTTP, participant names, queue order, notifications, clear speakers/requests')
+print('PASS: simulator HTTP, participant names, queues, notifications, and wireless telemetry controls')

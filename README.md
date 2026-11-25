@@ -1,8 +1,8 @@
-﻿# Unofficial Televic Confero plugin for Q-SYS, providing meeting, microphone and seat control. (In Development)
+﻿# Unofficial Televic Confero plugin for Q-SYS
 
 ## Overview
 
-The **Televic Confero (Plixus) Q-SYS Plugin** enables monitoring and control of Televic conference systems directly from Q-SYS through the Confero Customer API.
+The **Televic Confero Q-SYS plugin** monitors and controls G4 and Plixus conference systems through the Confero Customer API.
 
 It provides per-seat microphone control, active speaker and request lists, meeting controls, discussion settings, and recording controls in a multi-page interface.
 
@@ -18,7 +18,7 @@ It provides per-seat microphone control, active speaker and request lists, meeti
 - Start an open meeting or a selected scheduled meeting, and stop the current meeting
 - Set discussion mode and maximum number of open microphones
 - Start and stop recording with state feedback
-- Turn off wireless devices with a momentary button
+- Show per-seat battery charge and turn off wireless devices in G4 mode
 - Receive changes through long-poll notifications
 - Automatically refresh seat status and recover communication after controller outages
 - Expose controls and feedback as Q-SYS control pins
@@ -29,12 +29,12 @@ It provides per-seat microphone control, active speaker and request lists, meeti
 
 | Property | Value |
 | -------- | ----- |
-| Name | Televic Confero (Plixus) |
+| Name | Televic Confero |
 | File | `TelevicConfero.qplug` |
-| Version | 1.1.2 |
-| Build Version | 1.1.2.0 |
+| Version | 1.2.0 |
+| Build Version | 1.2.0.0 |
 | Author | Jens Claerebout |
-| API Target | Confero Customer API 7.18 (Plixus) |
+| API Target | Confero Customer API 7.18 (G4 and Plixus) |
 | Protocol | HTTP / HTTPS API |
 | Default Ports | HTTP `9080`, HTTPS `9443` |
 | Authentication | Bearer API token |
@@ -47,6 +47,7 @@ It provides per-seat microphone control, active speaker and request lists, meeti
 
 | Property | Default | Description |
 | -------- | ------- | ----------- |
+| `System Type` | Plixus | Select G4 to enable battery readouts and the Wireless page |
 | `Connection` | HTTP (9080) | Select HTTP on port 9080 or HTTPS on port 9443 |
 | `Seat Count` | 15 | Number of seat control rows to create (1-100) |
 | `Refresh Interval` | 30 | Seat status and meeting metadata refresh interval in seconds (10-60) |
@@ -90,6 +91,8 @@ Changing the address or token reconnects automatically. An explicit URL can spec
 | `Seat Mic On` | Input/Output | Toggle the microphone and display confirmed feedback |
 | `Seat Request` | Output | Request-to-speak LED |
 | `Seat Role` | Output | Reported seat role |
+| `Seat Battery A`, `Seat Battery B` | Output | G4-only battery percentage controls for the assigned online unit. Each seat readout shows `—` when its slot is unavailable. |
+| `Seat Status` | Output | Online, Offline, or Unknown from the room seat |
 
 ### Speaker and Request List Controls
 
@@ -129,10 +132,10 @@ Changing the address or token reconnects automatically. An explicit URL can spec
 | ---- | -------- |
 | Setup | Address, token, connection status, refresh, discussion mode, and maximum open microphones |
 | Meeting Controls | Current meeting information, start/stop buttons, and scheduled-meeting selection |
-| Seats | Seat number, name, role, microphone toggle, and request LED; up to 15 rows per page |
+| Seats | Seat number, name, role, microphone toggle, request LED, and seat status, plus Battery A and Battery B readouts in G4 (up to 15 rows per page) |
 | Active / Request List | Speaker/request lists, counts, selected-seat actions, and clear-list buttons |
 | Recording | Start/stop recording, recording LED, state, and operation status |
-| Wireless | Turn off button and command status |
+| Wireless | Turn off button and command status (G4 only) |
 
 Seat pages are created automatically. A Seat Count of 1-15 creates one **Seats** page; 16-30 creates **Seats 1** and **Seats 2**, with further pages added as needed.
 
@@ -146,7 +149,9 @@ The plugin uses JSON requests with Bearer token authentication and a long-poll n
 
 | Endpoint | Method | Purpose |
 | -------- | ------ | ------- |
-| `/api/discussion/seats` | GET | Discover seats and refresh seat status |
+| `/api/discussion/seats` | GET | Discover seats and refresh microphone, request, and role feedback |
+| `/api/room/seats/discussion` | GET | Read room seat status and unit assignments |
+| `/api/device/devices` | GET | Read device state and battery charge in G4 |
 | `/api/discussion/seats/{number}` | GET / PUT | Read seat feedback and control a microphone |
 | `/api/discussion/speakers` | GET / DELETE | Read or clear active speakers |
 | `/api/discussion/requests` | GET / DELETE | Read or clear requests |
@@ -161,7 +166,7 @@ The plugin uses JSON requests with Bearer token authentication and a long-poll n
 
 Speaker and request lists update directly from `SpeakersChanged` and `RequestsChanged` notifications. Each response renews the poll using `minimum-id = last event ID + 1`; HTTP 204 renews it without changing the lists.
 
-List snapshots are fetched on connection, recovery or missed events, and manual **Refresh**. The **Refresh Interval** reconciles seat status and meeting metadata without polling the speaker/request lists. Scheduled meetings load on connection, every 60 seconds, and on manual **Refresh**.
+List snapshots are fetched on connection, recovery or missed events, and manual **Refresh**. The **Refresh Interval** reconciles seat feedback, room status, and meeting metadata without polling the speaker/request lists. G4 also refreshes device telemetry. Room events trigger a telemetry refresh in both modes. Scheduled meetings load on connection, every 60 seconds, and on manual **Refresh**.
 
 Recording feedback uses `Recording.StateChanged` notifications. Discussion settings feedback uses `SettingsChanged` notifications.
 
@@ -205,14 +210,16 @@ An empty notification request reaching the full 40-second timeout renews automat
 
 ## Installation
 
-1. Copy `TelevicConfero.qplug` to your Q-SYS Designer user Plugins folder.
+1. Download [TelevicConfero.qplug](https://github.com/JClaerebout/Q-SYS-Plugin-televic-Confero/releases/latest/download/TelevicConfero.qplug) and double-click it. QSysPluginHelper will prompt you to install the plugin.
 2. Add a new plugin instance to the design.
-3. Set **Connection**, **Seat Count**, and **Refresh Interval** in the plugin properties.
+3. Set **System Type** to **G4** or **Plixus**, then set **Connection**, **Seat Count**, and **Refresh Interval** in the plugin properties.
 4. Open **Setup** and enter the controller address and API token without `Bearer`.
 5. Deploy the design to the Q-SYS Core.
 6. Verify Connected/OK status and confirm that the displayed seat numbers match the room configuration.
 
 When replacing version 1.0.0, check existing UCI controls and pin connections because the control definitions have changed. Discussion title, description, start/stop, and discussion status controls have been removed; meeting start/stop remains available on **Meeting Controls**.
+
+When upgrading a G4 design, select **G4** to enable the Wireless page and per-seat battery readouts. Plixus is the default.
 
 ---
 

@@ -3,6 +3,25 @@ from ConferoFakeAPI import State
 
 
 class SimulatorTests(unittest.TestCase):
+    def test_device_inventory_by_system_and_resize(self):
+        plixus = State(3)
+        self.assertEqual(plixus.snapshot()['wireless'], [])
+        self.assertEqual([plixus.room_seat(i)['units'][0] for i in plixus.seats],
+                         [device['serial'] for device in plixus.devices()])
+        self.assertTrue(all(d['powerState'] == {'powerSource': 'plixus'} for d in plixus.devices()))
+
+        g4 = State(2, 'G4')
+        first_serial = g4.room_seat(1)['units'][0]
+        with g4.condition:
+            g4.configure({'seatCount': 16})
+            g4.configure({'seatCount': 15})
+            g4.configure({'seatCount': 16})
+        serials = {g4.room_seat(i)['units'][0] for i in g4.seats}
+        self.assertEqual(g4.room_seat(1)['units'], [first_serial])
+        self.assertEqual(serials, {device['serial'] for device in g4.devices()})
+        self.assertEqual(len(serials), 16)
+        self.assertTrue(all(len(d['powerState']['batteryStatus']['details']) == 2 for d in g4.devices()))
+
     def test_limit_queue_admission_and_names(self):
         s = State(4)
         with s.condition:

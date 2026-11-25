@@ -1,12 +1,12 @@
--- Televic Confero (Plixus) Q-SYS Plugin v1.1.2
+-- Televic Confero Q-SYS Plugin v1.2.0
 -- Confero Customer API 7.18
-BuildVersion = "1.1.2.0"
+BuildVersion = "1.2.0.0"
 PluginInfo = {
-  Name = "Televic~Televic Confero (Plixus) v" .. BuildVersion, -- preferred format is "manufacturer~plugin name version"
+  Name = "Televic~Televic Confero v" .. BuildVersion, -- preferred format is "manufacturer~plugin name version"
   Version = BuildVersion,
   Id = "6c9ca9e2-6f14-45d9-a55d-4a5d39b8dba0",
   Author = "Jens Claerebout",
-  Description = "Control Televic Confero meetings and Plixus seat microphones through Customer API 7.18."
+  Description = "Control Televic Confero meetings and G4 or Plixus seat microphones through Customer API 7.18."
 }
 
 PluginInfo.Color = { 28, 116, 166 }
@@ -16,6 +16,7 @@ PluginInfo.IsManaged = true
 -- Properties
 function GetProperties()
   return {
+    { Name = "System Type", Type = "enum", Choices = { "G4", "Plixus" }, Value = "Plixus" },
     { Name = "Connection", Type = "enum", Choices = { "HTTP (9080)", "HTTPS (9443)" }, Value = "HTTP (9080)" },
     { Name = "Seat Count", Type = "integer", Min = 1, Max = 100, Value = 15 },
     { Name = "Refresh Interval", Type = "integer", Min = 10, Max = 60, Value = 30 },
@@ -24,16 +25,32 @@ function GetProperties()
 end
 
 -- Controls
+local g4BatterySlots = {
+  { key = "slotA", name = "Seat Battery A", readout = "Seat Battery A Readout", label = "Battery A", x = 670 },
+  { key = "slotB", name = "Seat Battery B", readout = "Seat Battery B Readout", label = "Battery B", x = 772 }
+}
+
+local function isG4(props)
+  return props["System Type"] and props["System Type"].Value == "G4"
+end
+
+local function seatControlNames(slots)
+  local names = {"Seat Number", "Seat Name", "Seat Mic On", "Seat Request", "Seat Role", "Seat Status"}
+  for _, slot in ipairs(slots) do
+    table.insert(names, slot.name)
+    table.insert(names, slot.readout)
+  end
+  return names
+end
+
 function GetControls(props)
   local seats = props["Seat Count"].Value
-  return {
+  local controls = {
     { Name = "Recording Start", ControlType = "Button", ButtonType = "Trigger", PinStyle = "Input", UserPin = true },
     { Name = "Recording Stop", ControlType = "Button", ButtonType = "Trigger", PinStyle = "Input", UserPin = true },
     { Name = "Recording Active", ControlType = "Indicator", IndicatorType = "Led", PinStyle = "Output", UserPin = true },
     { Name = "Recording State", ControlType = "Text", PinStyle = "Output", UserPin = true },
     { Name = "Recording Status", ControlType = "Text", PinStyle = "Output", UserPin = true },
-    { Name = "Wireless Turn Off", ControlType = "Button", ButtonType = "Trigger", PinStyle = "Input", UserPin = true },
-    { Name = "Wireless Status", ControlType = "Text", PinStyle = "Output", UserPin = true },
     { Name = "Discussion Mode", ControlType = "Text", PinStyle = "Both", UserPin = true },
     { Name = "Number of Open Mics", ControlType = "Knob", ControlUnit = "Integer", Min = 1, Max = 100, DefaultValue = 3, PinStyle = "Both", UserPin = true },
     { Name = "Apply Discussion Settings", ControlType = "Button", ButtonType = "Trigger", PinStyle = "Input", UserPin = true },
@@ -66,8 +83,19 @@ function GetControls(props)
 
     { Name = "Seat Mic On", ControlType = "Button", ButtonType = "Toggle", Count = seats, PinStyle = "Both", UserPin = true },
     { Name = "Seat Request", ControlType = "Indicator", IndicatorType = "LED", Count = seats, PinStyle = "Output", UserPin = true },
-    { Name = "Seat Role", ControlType = "Text", Count = seats, PinStyle = "Output", UserPin = true }
+    { Name = "Seat Role", ControlType = "Text", Count = seats, PinStyle = "Output", UserPin = true },
+    { Name = "Seat Status", ControlType = "Text", Count = seats, PinStyle = "Output", UserPin = true }
   }
+  if isG4(props) then
+    table.insert(controls, { Name = "Wireless Turn Off", ControlType = "Button", ButtonType = "Trigger", PinStyle = "Input", UserPin = true })
+    table.insert(controls, { Name = "Wireless Status", ControlType = "Text", PinStyle = "Output", UserPin = true })
+    for _, slot in ipairs(g4BatterySlots) do
+      table.insert(controls, { Name = slot.name, ControlType = "Knob", ControlUnit = "Percent", Min = 0, Max = 100,
+        DefaultValue = 0, Count = seats, PinStyle = "Output", UserPin = true })
+      table.insert(controls, { Name = slot.readout, ControlType = "Text", Count = seats, UserPin = false })
+    end
+  end
+  return controls
 end
 
 function GetPages(props)
@@ -78,7 +106,7 @@ function GetPages(props)
   end
   table.insert(pages, {name="Active / Request List"})
   table.insert(pages, {name="Recording"})
-  table.insert(pages, {name="Wireless"})
+  if isG4(props) then table.insert(pages, {name="Wireless"}) end
   return pages
 end
 
@@ -87,6 +115,10 @@ function GetControlLayout(props)
   local layout = {}
   local graphics = {}
   local seats = props["Seat Count"].Value
+  local g4 = isG4(props)
+  local batterySlots = g4 and g4BatterySlots or {}
+  local seatControls = seatControlNames(batterySlots)
+  local statusX = g4 and 884 or 660
   local width = 660
 
   layout["Seat Mic On"] = {}
@@ -133,11 +165,19 @@ function GetControlLayout(props)
   layout["IP Address"] = { PrettyName = "Connection~IP Address", Style = "Text", Position = {120, 4}, Size = {530, 28} }
   layout["API Token"] = { PrettyName = "Connection~API Token", Style = "Text", Position = {120, 40}, Size = {530, 28} }
   layout["Seat Number"], layout["Seat Name"] = {}, {}
+  layout["Seat Status"] = {}
+  for _, slot in ipairs(batterySlots) do layout[slot.name], layout[slot.readout] = {}, {} end
   table.insert(graphics, { Type = "Text", Text = "Name", Position = {455, 418}, Size = {195, 20} })
   for i = 1, seats do
     local y = 442 + (i - 1) * 30
     layout["Seat Number"][i] = { PrettyName = "Seats~Row " .. i .. "~Number", Style = "Text", Position = {10, y}, Size = {55, 26} }
     layout["Seat Name"][i] = { PrettyName = "Seats~Row " .. i .. "~Name", Style = "Text", Position = {455, y}, Size = {195, 26} }
+    for _, slot in ipairs(batterySlots) do
+      layout[slot.name][i] = { PrettyName = "Seats~Row " .. i .. "~" .. slot.label, Style = "None",
+        Position = {slot.x, y}, Size = {1, 1} }
+      layout[slot.readout][i] = { Style = "Text", IsReadOnly = true, Position = {slot.x + 5, y + 6}, Size = {68, 14} }
+    end
+    layout["Seat Status"][i] = { PrettyName = "Seats~Row " .. i .. "~Status", Style = "Text", IsReadOnly = true, Position = {statusX, y}, Size = {90, 26} }
     layout["Seat Request"][i].Style = "LED"
     layout["Seat Request"][i].ButtonType = nil
   end
@@ -165,7 +205,7 @@ function GetControlLayout(props)
       graphic.Position[2] = graphic.Position[2] + 124
     end
   end
-  for _, name in ipairs({"Seat Number", "Seat Name", "Seat Mic On", "Seat Request", "Seat Role"}) do
+  for _, name in ipairs(seatControls) do
     for _, row in ipairs(layout[name]) do row.Position[2] = row.Position[2] + 124 end
   end
   layout["Clear Speakers"].Position = {680, 438}
@@ -173,7 +213,7 @@ function GetControlLayout(props)
   layout["Clear Requests"].Position = {1010, 438}
   layout["Clear Requests"].PrettyName = "Lists~Clear Requests"
   -- Designer binds counted controls by flat names, unlike runtime Controls arrays.
-  for _, name in ipairs({"Seat Number", "Seat Name", "Seat Mic On", "Seat Request", "Seat Role"}) do
+  for _, name in ipairs(seatControls) do
     local rows = layout[name]
     layout[name] = nil
     for i = 1, seats do
@@ -217,6 +257,8 @@ function GetControlLayout(props)
     local firstRow = (page - 3) * 15 + 1
     label("Seats (rows " .. firstRow .. "-" .. math.min(firstRow + 14, seats) .. ")",10,0,640)
     label("Seat",10,32,55);label("Mic",75,32,80);label("Request",165,32,90);label("Role",265,32,180);label("Name",455,32,195)
+    for _, slot in ipairs(batterySlots) do label(slot.label,slot.x,32,76) end
+    label("Status",statusX,32,90)
   elseif page == listPage then label("Speaking seats",0,0,320);label("Request seats",330,0,320)
   elseif page == recordingPage then
     label("Recording",10,0,640)
@@ -225,7 +267,7 @@ function GetControlLayout(props)
     selected["Recording Active"]={Style="LED",Color={255,0,0},Position={10,100},Size={28,28}}
     selected["Recording State"]={Style="Text",IsReadOnly=true,Position={50,100},Size={290,28}}
     selected["Recording Status"]={Style="Text",IsReadOnly=true,Position={10,145},Size={640,40}}
-  elseif page == wirelessPage then
+  elseif g4 and page == wirelessPage then
     label("Wireless devices",10,0,640)
     selected["Wireless Turn Off"]={Style="Button",Legend="Turn Off",Position={10,45},Size={160,36}}
     selected["Wireless Status"]={Style="Text",IsReadOnly=true,Position={10,100},Size={640,40}}
@@ -239,9 +281,11 @@ if Controls then
   -- Q-SYS may expose Count=1 as a scalar control instead of an array.
   local hostControls = Controls
   local Controls = setmetatable({}, { __index = hostControls })
-  for _, name in ipairs({"Seat Number", "Seat Name", "Seat Mic On", "Seat Request", "Seat Role"}) do
+  local g4 = isG4(Properties)
+  local batterySlots = g4 and g4BatterySlots or {}
+  for _, name in ipairs(seatControlNames(batterySlots)) do
     local control = hostControls[name]
-    if Properties["Seat Count"].Value == 1 and control.String ~= nil then
+    if Properties["Seat Count"].Value == 1 and (control.Value ~= nil or control.String ~= nil) then
       Controls[name] = {control}
     end
   end
@@ -262,6 +306,9 @@ if Controls then
   local generation = 0
   local configured = false
   local seatStates, seatNumbers, names = {}, {}, {}
+  local roomSeats, deviceBatteries = {}, {}
+  local roomSeatsPath, devicesPath = "/api/room/seats/discussion", "/api/device/devices"
+  local seatStatusLabels = {online = "Online", offline = "Offline"}
   local speakers, requests = {}, {}
   local selectedSeats = {}
   local listActions = { ["Speaking Seats"] = "Turn Off Selected Mic", ["Request Seats"] = "Enable Requested Mic" }
@@ -325,8 +372,8 @@ if Controls then
         if callback then callback(code or 0, data or "", error, responseHeaders, true) end
         return
       end
-      -- Recording availability must not disable otherwise working mic control.
-      if path == "/api/recording/state" then
+      -- Optional feedback has its own availability, independent of mic control.
+      if path == "/api/recording/state" or path == roomSeatsPath or path == devicesPath then
         if callback then callback(code or 0, data or "", error, responseHeaders) end
         return
       end
@@ -374,6 +421,13 @@ if Controls then
     return false
   end
 
+  local function seatBatteries(roomSeat)
+    if not roomSeat or roomSeat.state ~= "online" or type(roomSeat.units) ~= "table" then return nil end
+    for _, serial in ipairs(roomSeat.units) do
+      if deviceBatteries[serial] then return deviceBatteries[serial] end
+    end
+  end
+
   local function render()
     for i = 1, seatCount do
       local number = seatNumbers[i]
@@ -384,6 +438,18 @@ if Controls then
       Controls["Seat Mic On"][i].IsDisabled = seat == nil or not Controls.Connected.Boolean
       Controls["Seat Request"][i].Boolean = seat ~= nil and seat.requestingToSpeak == true
       Controls["Seat Role"][i].String = seat and tostring(seat.role or "") or ""
+      local roomSeat = number and roomSeats[number]
+      Controls["Seat Status"][i].String = number and ((roomSeat and seatStatusLabels[roomSeat.state]) or "Unknown") or ""
+      local batteries = seatBatteries(roomSeat)
+      for _, slot in ipairs(batterySlots) do
+        local percent = batteries and batteries[slot.key]
+        local meter = Controls[slot.name][i]
+        meter.Position = (percent or 0) / 100
+        meter.IsIndeterminate = percent == nil
+        local readout = Controls[slot.readout][i]
+        readout.String = percent and (tostring(percent) .. "%") or (number and "—" or "")
+        readout.IsIndeterminate = meter.IsIndeterminate
+      end
     end
     for _, list in ipairs({{speakers, "Speaking Seats", "Speaker Count"}, {requests, "Request Seats", "Request Count"}}) do
       local lines = {}
@@ -412,7 +478,7 @@ if Controls then
   end
 
   -- Coalesce reads and reject snapshots superseded by a notification.
-  local function readSnapshot(path, apply)
+  local function readSnapshot(path, apply, optional)
     if pending[path] or not configured then return end
     pending[path] = true
     local revision = revisions[path] or 0
@@ -421,16 +487,63 @@ if Controls then
       if revision ~= (revisions[path] or 0) then
         log("Debug", "Discarding stale snapshot " .. path .. " after newer feedback")
         -- List events carry the complete ordered list; no replacement GET needed.
-        if path == "/api/discussion/seats" or listEventRevisions[path] ~= revisions[path] then readSnapshot(path, apply) end
+        if path == "/api/discussion/seats" or listEventRevisions[path] ~= revisions[path] then readSnapshot(path, apply, optional) end
         return
       end
-      if code == 200 then
-        local value = decode(data)
-        if type(value) == "table" then apply(value)
-        else failures[path] = "Invalid JSON: " .. path; setConnected(false, failures[path]) end
+      local value = code == 200 and decode(data)
+      if type(value) == "table" then apply(value)
+      elseif optional then
+        log("Error", "Seat telemetry unavailable: " .. path .. " (HTTP " .. code .. ")")
+        apply({})
+      elseif code == 200 then
+        failures[path] = "Invalid JSON: " .. path
+        setConnected(false, failures[path])
       end
       render()
     end)
+  end
+
+  local function batteryReadings(device)
+    if device.state ~= "online" then return nil end
+    local power = device.powerState
+    local battery = type(power) == "table" and power.batteryStatus
+    if type(battery) ~= "table" or type(battery.details) ~= "table" then return nil end
+    local slots = {}
+    for _, detail in ipairs(battery.details) do
+      if type(detail) == "table" and (detail.slotName == "slotA" or detail.slotName == "slotB") then
+        local percent = detail.percentage
+        if type(percent) == "number" and percent >= 0 and percent <= 100 then
+          slots[detail.slotName] = percent
+        end
+      end
+    end
+    if next(slots) then return slots end
+  end
+
+  local function refreshTelemetry()
+    readSnapshot(roomSeatsPath, function(value)
+      roomSeats = {}
+      for _, seat in ipairs(value) do
+        local number = type(seat) == "table" and tonumber(seat.seatNumber)
+        if number then roomSeats[number] = seat end
+      end
+    end, true)
+    if not g4 then return end
+    readSnapshot(devicesPath, function(value)
+      deviceBatteries = {}
+      for _, device in ipairs(value) do
+        -- Battery capability is described by powerState across device types.
+        if type(device) == "table" and type(device.serial) == "string" then
+          deviceBatteries[device.serial] = batteryReadings(device)
+        end
+      end
+    end, true)
+  end
+
+  local function invalidateTelemetry()
+    for _, path in ipairs({roomSeatsPath, devicesPath}) do
+      revisions[path] = (revisions[path] or 0) + 1
+    end
   end
 
   local function refreshLists()
@@ -497,6 +610,7 @@ if Controls then
     refreshMeeting()
     refreshSeats()
     refreshLists()
+    refreshTelemetry()
   end
   
   local settingsPending = false
@@ -601,15 +715,17 @@ if Controls then
   end
   Controls["Recording Start"].EventHandler = function() setRecording("recording") end
   Controls["Recording Stop"].EventHandler = function() setRecording("idle") end
-  Controls["Wireless Turn Off"].EventHandler = function()
-    if not configured then Controls["Wireless Status"].String = "Enter IP address and token on Setup"; return end
-    request("POST", "/api/device/devices/actions", rapidjson.encode({action="turnOff"}), 10, function(code)
-      if code >= 200 and code < 300 then
-        Controls["Wireless Status"].String = "Turn off command sent"
-      else
-        Controls["Wireless Status"].String = "Turn off failed (HTTP " .. tostring(code) .. ")"
-      end
-    end)
+  if g4 then
+    Controls["Wireless Turn Off"].EventHandler = function()
+      if not configured then Controls["Wireless Status"].String = "Enter IP address and token on Setup"; return end
+      request("POST", "/api/device/devices/actions", rapidjson.encode({action="turnOff"}), 10, function(code)
+        if code >= 200 and code < 300 then
+          Controls["Wireless Status"].String = "Turn off command sent"
+        else
+          Controls["Wireless Status"].String = "Turn off failed (HTTP " .. tostring(code) .. ")"
+        end
+      end)
+    end
   end
   local refreshScheduledMeetings
   local function handleEvent(notification)
@@ -621,6 +737,7 @@ if Controls then
       for _, path in ipairs({"/api/discussion/seats", "/api/discussion/speakers", "/api/discussion/requests"}) do
         revisions[path] = (revisions[path] or 0) + 1
       end
+      invalidateTelemetry()
       refreshAll()
     end
   
@@ -644,6 +761,10 @@ if Controls then
       showRecording(notification.data)
     elseif notification.module == "Room" then
       refreshSeats()
+      if notification.discontinuity ~= true then
+        invalidateTelemetry()
+        refreshTelemetry()
+      end
     elseif notification.module == "Meeting" then
       if notification.name == "ScheduledMeetingsChanged" then refreshScheduledMeetings(); return end
       refreshMeeting()
@@ -873,6 +994,7 @@ if Controls then
     pending, revisions, failures = {}, {}, {}
     listEventRevisions = {}
     seatStates, seatNumbers, names, speakers, requests = {}, {}, {}, {}, {}
+    roomSeats, deviceBatteries = {}, {}
     selectedSeats = {}
     meetingId = ""
     Controls["Meeting Running"].Boolean = false
@@ -909,7 +1031,7 @@ if Controls then
 
   -- Speaker/request lists are maintained by the long-poll event stream.
   -- Periodic metadata/seat reconciliation must not poll the list endpoints.
-  refreshTimer.EventHandler = function() refreshMeeting(); refreshSeats() end
+  refreshTimer.EventHandler = function() refreshMeeting(); refreshSeats(); refreshTelemetry() end
   scheduledTimer.EventHandler = refreshScheduledMeetings
   Controls["IP Address"].EventHandler = reconnect
   Controls["API Token"].EventHandler = reconnect

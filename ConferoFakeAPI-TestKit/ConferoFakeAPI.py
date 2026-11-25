@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, urlparse
 
 
 class State:
-    def __init__(self, seat_count: int):
+    def __init__(self, seat_count: int, system: str = "Plixus"):
         roles = ("chairperson", "delegate", "delegate", "vip", "delegate")
         self.seats = {
             i: {
@@ -48,6 +48,87 @@ class State:
             "options": {"switchOffAllowed": True, "cancelRequestAllowed": True, "ledColorOn": "red",
                         "ledColorRequest": "green", "ledColorOff": "off", "nextInLineIndication": True}}
         self.names = {i: f"Delegate {i}" for i in self.seats}
+        self.room_states = {i: "online" for i in self.seats}
+        self.system = system
+        self.wireless = {}
+        self.next_wireless_serial = 0x1590018b
+        if self.system == "G4":
+            for number in self.seats:
+                self.add_wireless(number)
+
+    def add_wireless(self, number):
+        serial = f"{self.next_wireless_serial:08x}"
+        self.next_wireless_serial += 1
+        variation = (number - 1) % 30
+        self.wireless[serial] = {"serial": serial, "seatNumber": number, "state": "online",
+                                 "batteries": {"slotA": 80 - variation, "slotB": 65 - variation}}
+
+    @staticmethod
+    def wired_serial(number):
+        return str(16201000 + number)
+
+    def room_seat(self, number):
+        units = ([unit["serial"] for unit in self.wireless.values() if unit["seatNumber"] == number]
+                 if self.system == "G4" else [self.wired_serial(number)])
+        return {"seatNumber": number, "state": self.room_states[number], "units": units,
+                "capabilities": ["discussion"], "role": self.seats[number]["role"]}
+
+    @staticmethod
+    def wireless_device(unit):
+        batteries = unit["batteries"]
+        details = [{"slotName": slot, "percentage": percentage, "cycles": 23,
+                    "health": 100, "temperature": 30}
+                   for slot, percentage in batteries.items() if percentage is not None]
+        return {"serial": unit["serial"], "deviceType": "confideaG4Flex", "state": unit["state"],
+                "powerState": {"powerSource": "battery",
+                               "batteryStatus": {"runtimeToEmpty": 180 if any(batteries.values()) else 0,
+                                                 "details": details}}}
+
+    def devices(self):
+        if self.system == "G4":
+            return [self.wireless_device(unit) for unit in self.wireless.values()]
+        return [{"serial": self.wired_serial(i), "deviceType": "confideaFlex", "state": self.room_states[i],
+                 "powerState": {"powerSource": "plixus"}} for i in self.seats]
+
+    def set_room_seat_state(self, number, state):
+        if type(number) is not int or number not in self.seats or state not in ("online", "offline"):
+            raise ValueError("Select an existing seat and an online or offline state")
+        if self.room_states[number] != state:
+            self.room_states[number] = state
+            self.add_event("Room", "SeatChanged", self.room_seat(number))
+
+    def set_wireless(self, body):
+        serial = body.get("serial")
+        if not isinstance(serial, str) or serial not in self.wireless:
+            raise ValueError("Select an existing G4 wireless unit")
+        seat = body.get("seatNumber")
+        state = body.get("state")
+        batteries = body.get("batteries")
+        if seat is not None and (type(seat) is not int or seat not in self.seats):
+            raise ValueError("Select an existing seat or leave the wireless unit unassigned")
+        if state not in ("online", "offline"):
+            raise ValueError("Select an online or offline wireless state")
+        if not isinstance(batteries, dict) or batteries.keys() != {"slotA", "slotB"} or any(
+                value is not None and (type(value) is not int or not 0 <= value <= 100)
+                for value in batteries.values()):
+            raise ValueError("Enter a whole percentage from 0 to 100 or leave the slot blank")
+        unit = self.wireless[serial]
+        previous_seat = unit["seatNumber"]
+        previous_device = self.wireless_device(unit)
+        if seat is not None and previous_seat != seat:
+            # Moving to an occupied seat swaps assignments and keeps both units testable.
+            for other in self.wireless.values():
+                if other["seatNumber"] == seat:
+                    other["seatNumber"] = previous_seat
+                    break
+        unit.update(seatNumber=seat, state=state, batteries=dict(batteries))
+        device = self.wireless_device(unit)
+        if previous_device != device:
+            self.add_event("Device", "DeviceChanged", device)
+        if previous_seat != seat:
+            for number in (previous_seat, seat):
+                if number is not None:
+                    self.add_event("Room", "SeatChanged", self.room_seat(number))
 
     def participants(self):
         return [{"participantId": f"seat-{i}", "firstName": self.names[i], "lastName": "",
@@ -115,6 +196,13 @@ class State:
         old = self.seats
         self.seats = {i: old.get(i, {"seatNumber": i, "microphoneOn": False,
                       "requestingToSpeak": False, "role": "delegate"}) for i in range(1, count + 1)}
+        self.room_states = {i: self.room_states.get(i, "online") for i in self.seats}
+        if self.system == "G4":
+            removed = old.keys() - self.seats.keys()
+            self.wireless = {serial: unit for serial, unit in self.wireless.items()
+                             if unit["seatNumber"] not in removed}
+            for i in sorted(self.seats.keys() - old.keys()):
+                self.add_wireless(i)
         self.names = {i: names.get(str(i), self.names.get(i, f"Delegate {i}")).strip() or f"Seat {i}"
                       for i in self.seats}
         self.max_open = maximum
@@ -128,8 +216,7 @@ class State:
         for i in old.keys() - self.seats.keys():
             self.add_event("Room", "SeatRemoved", i)
         for i in self.seats.keys() - old.keys():
-            self.add_event("Room", "SeatAdded", {"seatNumber": i, "state": "online",
-                "units": [f"sim-{i}"], "capabilities": ["discussion"], "role": self.seats[i]["role"]})
+            self.add_event("Room", "SeatAdded", self.room_seat(i))
         self.add_event("Meeting", "ScheduledMeetingsChanged", {
             "kind": "EventScheduledMeetingsChanged",
             "scheduled_meetings": [dict(m) for m in self.scheduled_meetings]})
@@ -145,7 +232,8 @@ class State:
     def snapshot(self):
         return {"seatCount": len(self.seats), "maxOpen": self.max_open,
                 "meetingName": self.scheduled_meetings[0]["name"], "meeting": self.meeting,
-                "seats": [dict(s, name=self.names[i]) for i, s in self.seats.items()],
+                "seats": [dict(s, name=self.names[i], roomState=self.room_states[i]) for i, s in self.seats.items()],
+                "system": self.system, "wireless": list(self.wireless.values()),
                 "speakers": self.speakers, "requests": self.requests}
 
     def add_event(self, module: str, name: str, data=None):
@@ -167,9 +255,9 @@ class State:
 class ConferoServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, handler, seat_count: int, token: str, long_poll: float):
+    def __init__(self, address, handler, seat_count: int, token: str, long_poll: float, system: str = "Plixus"):
         super().__init__(address, handler)
-        self.state = State(seat_count)
+        self.state = State(seat_count, system)
         self.api_token = token
         self.long_poll = long_poll
 
@@ -247,6 +335,16 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(HTTPStatus.OK, list(state.seats.values()))
             return
 
+        if path == "/api/room/seats/discussion":
+            with state.condition:
+                self.send_json(200, [state.room_seat(i) for i in state.seats])
+            return
+
+        if path == "/api/device/devices":
+            with state.condition:
+                self.send_json(200, state.devices())
+            return
+
         if path in ("/api/discussion/speakers", "/api/discussion/requests"):
             with state.condition:
                 self.send_json(HTTPStatus.OK, state.speakers if path.endswith("speakers") else state.requests)
@@ -272,7 +370,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/notification/modules":
-            self.send_json(HTTPStatus.OK, ["Discussion", "Meeting", "Room", "Recording"])
+            self.send_json(HTTPStatus.OK, ["Discussion", "Meeting", "Room", "Recording", "Device"])
             return
 
         if path == "/api/notification/events":
@@ -350,6 +448,21 @@ class Handler(BaseHTTPRequestHandler):
                 with state.condition:
                     state.configure(body)
                     self.send_json(200, state.snapshot())
+            except ValueError as error:
+                self.send_json(400, {"message": str(error)})
+            return
+
+        if path in ("/sim/seat-state", "/sim/wireless"):
+            body = self.read_json()
+            try:
+                if not isinstance(body, dict):
+                    raise ValueError("Expected an object")
+                with state.condition:
+                    if path == "/sim/seat-state":
+                        state.set_room_seat_state(body.get("seatNumber"), body.get("state"))
+                    else:
+                        state.set_wireless(body)
+                self.send_json(204)
             except ValueError as error:
                 self.send_json(400, {"message": str(error)})
             return
@@ -473,13 +586,16 @@ def main():
     parser.add_argument("--port", type=int, default=9080, help="Listen port (default: 9080)")
     parser.add_argument("--token", default="qsys-test-token", help="Required bearer token")
     parser.add_argument("--seats", type=int, default=10, help="Number of simulated seats")
+    parser.add_argument("--system", type=str.lower, choices=("g4", "plixus"), default="plixus",
+                        help="Simulate wireless G4 or wired Plixus seats (default: plixus)")
     parser.add_argument("--long-poll", type=float, default=10.0, help="Notification timeout in seconds")
     args = parser.parse_args()
 
-    server = ConferoServer((args.host, args.port), Handler, max(1, args.seats), args.token, max(0.1, args.long_poll))
+    system = "G4" if args.system == "g4" else "Plixus"
+    server = ConferoServer((args.host, args.port), Handler, max(1, args.seats), args.token, max(0.1, args.long_poll), system)
     print(f"Fake Confero API listening on http://{args.host}:{args.port}")
     print(f"Bearer token: {args.token}")
-    print(f"Simulated seats: {max(1, args.seats)}")
+    print(f"Simulated seats: {max(1, args.seats)} ({system})")
     print(f"Browser UI: http://127.0.0.1:{args.port}/")
     try:
         server.serve_forever()

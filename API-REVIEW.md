@@ -35,3 +35,7 @@ Documentation ambiguities and validation limits:
 - The simulator's overflow-to-request policy and automatic queue admission are requested test behavior. The API's seat PUT schema does not specify those arbitration rules, so simulator success does not prove that a real controller in every discussion mode behaves identically.
 - The simulator's `/sim/*` routes and browser UI are test-only extensions, not Confero endpoints. It does not emulate licensing, TLS, all discussion modes, or every controller rule.
 - Automated Lua and simulator regressions pass. Designer rendering, Core HTTP/TLS behavior, real-controller timing, and externally started discussion IDs still require hardware validation.
+
+## G4 battery capture, 25 November 2026
+
+Two successful snapshots from a G4 WAP running Confero 7.17.2-2 matched all 52 room seats to device serials. Every FLEX unit reported only `slotA`, with `percentage: 0` and `runtimeToEmpty: 0`. This included all 13 online units. The capture establishes the seat-to-device mapping and the values delivered to the plugin. Comparing one online unit with a known charged battery against the Confero web interface would establish whether the API reports the actual charge on this system.

@@ -5,7 +5,7 @@
 Python 3 is the only requirement.
 
 ```bash
-python ConferoFakeAPI.py --seats 10 --token qsys-test-token
+python ConferoFakeAPI.py --system plixus --seats 10 --token qsys-test-token
 ```
 
 On Windows, allow Python through Windows Firewall for the private network if prompted. Find the computer's LAN address with `ipconfig`. The Q-SYS Core and computer must be able to reach each other.
@@ -20,6 +20,7 @@ In the plugin, press **Refresh**, select your meeting under **Scheduled Meetings
 
 - **IP Address input field:** the LAN IP address of the computer running the simulator (do not use `127.0.0.1` when testing on a physical Core)
 - **Connection:** `HTTP (9080)`
+- **System Type:** `Plixus` for wired seats, or `G4` when the simulator runs with `--system g4`
 - **API Token input field:** `qsys-test-token`. Connection starts automatically when both fields are filled.
 - **Seat Count:** `10`, or the value passed to `--seats`
 
@@ -44,6 +45,17 @@ Invoke-RestMethod -Method Put -Uri 'http://127.0.0.1:9080/api/discussion/seats/2
 
 The terminal running the simulator logs every HTTP request.
 
+## Seat telemetry in Designer without a WAP
+
+1. Start the fake API with `python ConferoFakeAPI.py --system g4 --seats 16 --token qsys-test-token`. Open the simulator UI and run the plugin in Designer Emulate with `127.0.0.1`, the same token, **System Type** set to **G4**, and **Seat Count** set to 16.
+2. On **Seats 1**, seat 1 should show **Online**, **Battery A** at **80%**, and **Battery B** at **65%**. Every G4 seat starts with two batteries. Switch seat 2's **Seat status** to **Offline** and back. The Room events should update Designer without pressing **Refresh**.
+3. In **Wireless units**, select the unit assigned to seat 1, leave slot B blank, and apply. After the next **Refresh Interval**, or after pressing **Refresh** in Designer, seat 1 should show **Battery A** at **80%** and **Battery B** as **—**. Set slot A to 0 and apply. Verify **Battery A** shows **0%** while **Battery B** still shows **—**.
+4. Set **Unit state** to **Offline** and apply. After a refresh, both battery readouts should show **—** and the seat should still show **Online**. Set the unit back to **Online**, apply, and verify that **Battery A** shows **0%** again. Changing the seat's own status to **Offline** should also clear the charge.
+5. Set **Assigned seat** to **Seat 16** and apply. The units swap seats. The Room events should move the **0%** reading to **Battery A** on seat 16 on **Seats 2**, while seat 1 shows the other unit's charge. Connect with a plugin configured for **Seat Count** 1 and reassign the edited unit to seat 1 to check the single-row **Seats** page.
+6. Restart the fake API with `--system plixus` and set **System Type** to **Plixus**. Each seat should still show its status. The Seats pages omit the battery readouts and the plugin omits the Wireless page.
+
+The plugin joins room `units[]` to device `serial` using exact string matches. A G4 WAP capture on Confero 7.17.2-2 confirmed this match for all 52 seats. To validate battery telemetry on hardware, compare the charge for one online unit with the reading in Confero. Room events during hardware power changes and reassignment still need verification.
+
 ## Useful options
 
 ```bash
@@ -55,6 +67,6 @@ The simulator covers the plugin's meeting, discussion, seat, ordered-list, and n
 
 ## Automated runtime checks
 
-Install `lupa` in your Python environment (`python -m pip install lupa`), then run `python test_plugin.py` from this folder. The test executes the actual plugin Lua with mocked asynchronous Q-SYS controls, HTTP requests, and timers. It checks credentials, sparse seat numbering, participant names, microphone-only commands, confirmed feedback, ordered lists, stale responses, and reconnect/error recovery.
+Install `lupa` in your Python environment (`python -m pip install lupa`), then run `python test_plugin.py` and `python -m unittest -v test_simulator` from this folder. The plugin test executes the Lua with mocked asynchronous Q-SYS controls, HTTP requests, and timers. It also exercises the fake API over loopback HTTP. Coverage includes sparse and reordered seats, reassignment across pages, two battery slots, missing batteries, 0% charge, offline recovery, and Room events.
 
 Actual Q-SYS rendering, Core networking/TLS, and a physical Confero controller still require the manual checks above.
